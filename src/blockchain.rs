@@ -19,7 +19,7 @@ pub type BlockHeight = u64;
 // ----------------------------------------------------------------------------
 
 /// Manages the canonical set of all currently valid (unspent) triangles (UTXO set).
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TriangleState {
     pub utxo_set: HashMap<Sha256Hash, Triangle>,
 }
@@ -188,7 +188,7 @@ const TARGET_BLOCK_TIME_SECONDS: i64 = 10;
 const DIFFICULTY_ADJUSTMENT_WINDOW: BlockHeight = 10;
 
 /// The main chain data structure.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Blockchain {
     pub blocks: Vec<Block>,
     pub state: TriangleState,

@@ -5,3 +5,4 @@ pub mod error;
 pub mod miner;
 pub mod crypto;
 pub mod persistence;
+pub mod network;
