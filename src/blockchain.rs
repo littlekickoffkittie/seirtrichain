@@ -208,20 +208,26 @@ impl Blockchain {
     
     fn add_genesis_block(&mut self) {
         self.state.init_genesis();
-        
-        let genesis_block_hash = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
 
+        let headline = "Optimism rises for Thursday summit between Trump and Xi";
+        let genesis_block_hash = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        
         let mut genesis_block = Block::new(
-            0, 
-            genesis_block_hash.clone(), 
+            0,
+            genesis_block_hash.clone(),
             self.difficulty,
-            vec![], 
+            vec![],
         );
         
-        genesis_block.nonce = 42; 
+        genesis_block.nonce = 42;
         genesis_block.hash = genesis_block_hash;
         
         self.blocks.push(genesis_block);
+        
+        println!("🔺 Genesis Block Created");
+        println!("   Headline: \"{}\"", headline);
+        println!("   Date: October 26, 2025");
+        println!("   Hash: {}", self.blocks[0].hash);
     }
     
     /// Adjusts the mining difficulty based on the time taken for the last adjustment window.

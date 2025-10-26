@@ -5,6 +5,7 @@ use std::fmt;
 #[derive(Debug, Clone)]
 pub enum ChainError {
     InvalidBlockLinkage,
+    DatabaseError(String),
     InvalidProofOfWork,
     InvalidMerkleRoot,
     InvalidTransaction(String),
@@ -21,6 +22,7 @@ impl fmt::Display for ChainError {
             ChainError::InvalidTransaction(msg) => write!(f, "Invalid transaction: {}", msg),
             ChainError::TriangleNotFound(msg) => write!(f, "Triangle not found: {}", msg),
             ChainError::CryptoError(msg) => write!(f, "Cryptographic error: {}", msg),
+            ChainError::DatabaseError(msg) => write!(f, "Database error: {}", msg),
         }
     }
 }
