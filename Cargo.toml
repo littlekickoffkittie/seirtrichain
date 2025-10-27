@@ -30,3 +30,19 @@ path = "src/bin/siertri-miner.rs"
 [[bin]]
 name = "siertri-node"
 path = "src/bin/siertri-node.rs"
+
+[[bin]]
+name = "siertri-send"
+path = "src/bin/siertri-send.rs"
+
+[[bin]]
+name = "siertri-wallet-new"
+path = "src/bin/siertri-wallet-new.rs"
+
+[[bin]]
+name = "siertri-balance"
+path = "src/bin/siertri-balance.rs"
+
+[[bin]]
+name = "siertri-mine-block"
+path = "src/bin/siertri-mine-block.rs"

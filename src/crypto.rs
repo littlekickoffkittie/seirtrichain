@@ -1,12 +1,10 @@
-//! Cryptographic primitives for siertrichain.
-//! Implements key generation, signing, and verification.
+//! Cryptographic primitives for siertrichain
 
 use sha2::{Digest, Sha256};
 use secp256k1::{Secp256k1, SecretKey, PublicKey, Message, ecdsa::Signature};
 use rand::rngs::OsRng;
 use crate::error::ChainError;
 
-/// A cryptographic key pair for signing transactions
 #[derive(Debug, Clone)]
 pub struct KeyPair {
     pub secret_key: SecretKey,
@@ -14,7 +12,6 @@ pub struct KeyPair {
 }
 
 impl KeyPair {
-    /// Generate a new random key pair
     pub fn generate() -> Result<Self, ChainError> {
         let secp = Secp256k1::new();
         let mut rng = OsRng;
@@ -28,7 +25,12 @@ impl KeyPair {
         })
     }
     
-    /// Get the address (hash of public key)
+    pub fn from_secret_key(secret_key: SecretKey) -> Self {
+        let secp = Secp256k1::new();
+        let public_key = PublicKey::from_secret_key(&secp, &secret_key);
+        KeyPair { secret_key, public_key }
+    }
+    
     pub fn address(&self) -> String {
         let pubkey_bytes = self.public_key.serialize();
         let mut hasher = Sha256::new();
@@ -36,7 +38,6 @@ impl KeyPair {
         format!("{:x}", hasher.finalize())
     }
     
-    /// Sign a message
     pub fn sign(&self, message: &[u8]) -> Result<Vec<u8>, ChainError> {
         let secp = Secp256k1::new();
         
@@ -52,7 +53,6 @@ impl KeyPair {
     }
 }
 
-/// Verify a signature against a public key and message
 pub fn verify_signature(
     public_key_bytes: &[u8],
     message: &[u8],
@@ -76,7 +76,6 @@ pub fn verify_signature(
     Ok(secp.verify_ecdsa(&message, &signature, &public_key).is_ok())
 }
 
-/// Address type for ownership
 pub type Address = String;
 
 #[cfg(test)]

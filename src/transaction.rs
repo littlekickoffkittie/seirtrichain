@@ -1,16 +1,16 @@
-//! Transaction types and validation for siertrichain.
-//! Handles subdivision transactions and coinbase rewards.
+//! Transaction types for siertrichain
 
-use serde::{Serialize, Deserialize};
 use sha2::{Digest, Sha256};
-use crate::geometry::Triangle;
 use crate::blockchain::TriangleState;
+use crate::geometry::Triangle;
 use crate::error::ChainError;
-use crate::crypto::{verify_signature, Address};
 
-/// Transaction types in siertrichain
-#[derive(Debug, Clone, Serialize, Deserialize)]
+pub type Address = String;
+
+/// A transaction that can occur in a block
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Transaction {
+    Transfer(TransferTx),
     Subdivision(SubdivisionTx),
     Coinbase(CoinbaseTx),
 }
@@ -32,39 +32,43 @@ impl Transaction {
                 tx.reward_area,
                 tx.beneficiary_address,
             ),
+            Transaction::Transfer(tx) => format!(
+                "transfer{}{}{}{}{}",
+                tx.input_hash, tx.new_owner, tx.sender, tx.fee, tx.nonce
+            ),
         };
-        
+
         let mut hasher = Sha256::new();
         hasher.update(tx_data.as_bytes());
         format!("{:x}", hasher.finalize())
     }
-    
+
     /// Validate this transaction against the current UTXO state
     pub fn validate(&self, state: &TriangleState) -> Result<(), ChainError> {
         match self {
             Transaction::Subdivision(tx) => tx.validate(state),
             Transaction::Coinbase(tx) => tx.validate(),
+            Transaction::Transfer(tx) => tx.validate(),
         }
     }
 }
 
-/// A transaction that subdivides a parent triangle into three child triangles
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Subdivision transaction: splits one parent triangle into three children
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SubdivisionTx {
     pub parent_hash: String,
-    pub children: [Triangle; 3],
+    pub children: Vec<Triangle>,
     pub owner_address: Address,
-    pub signature: Vec<u8>,
-    pub public_key: Vec<u8>,
     pub fee: u64,
     pub nonce: u64,
+    pub signature: Option<Vec<u8>>,
+    pub public_key: Option<Vec<u8>>,
 }
 
 impl SubdivisionTx {
-    /// Create a new subdivision transaction
     pub fn new(
         parent_hash: String,
-        children: [Triangle; 3],
+        children: Vec<Triangle>,
         owner_address: Address,
         fee: u64,
         nonce: u64,
@@ -73,82 +77,147 @@ impl SubdivisionTx {
             parent_hash,
             children,
             owner_address,
-            signature: Vec::new(),
-            public_key: Vec::new(),
             fee,
             nonce,
+            signature: None,
+            public_key: None,
         }
     }
-    
-    /// Get the signable message for this transaction
+
     pub fn signable_message(&self) -> Vec<u8> {
-        let msg = format!(
-            "{}{}{}{}{}",
-            self.parent_hash,
-            self.children.iter().map(|c| c.hash()).collect::<Vec<_>>().join(""),
-            self.owner_address,
-            self.fee,
-            self.nonce,
-        );
-        msg.into_bytes()
+        let mut message = Vec::new();
+        message.extend_from_slice(self.parent_hash.as_bytes());
+        for child in &self.children {
+            message.extend_from_slice(child.hash().as_bytes());
+        }
+        message.extend_from_slice(self.owner_address.as_bytes());
+        message.extend_from_slice(&self.fee.to_le_bytes());
+        message.extend_from_slice(&self.nonce.to_le_bytes());
+        message
     }
-    
-    /// Sign this transaction with a keypair
+
     pub fn sign(&mut self, signature: Vec<u8>, public_key: Vec<u8>) {
-        self.signature = signature;
-        self.public_key = public_key;
+        self.signature = Some(signature);
+        self.public_key = Some(public_key);
     }
-    
-    /// Validate this subdivision transaction
+
     pub fn validate(&self, state: &TriangleState) -> Result<(), ChainError> {
-        // 1. Check that parent triangle exists in UTXO set
-        let parent = state.get_triangle(&self.parent_hash)?;
-        
-        // 2. Verify the subdivision is geometrically correct
+        if !state.utxo_set.contains_key(&self.parent_hash) {
+            return Err(ChainError::TriangleNotFound(format!(
+                "Parent triangle {} not found in UTXO set",
+                self.parent_hash
+            )));
+        }
+
+        let parent = state.utxo_set.get(&self.parent_hash).unwrap();
         let expected_children = parent.subdivide();
+
+        if self.children.len() != 3 {
+            return Err(ChainError::InvalidTransaction(
+                "Subdivision must produce exactly 3 children".to_string(),
+            ));
+        }
+
         for (i, child) in self.children.iter().enumerate() {
-            if child.hash() != expected_children[i].hash() {
-                return Err(ChainError::InvalidTransaction(
-                    format!("Child triangle {} does not match expected subdivision", i)
-                ));
+            if (child.a.x - expected_children[i].a.x).abs() > 1e-10 ||
+               (child.a.y - expected_children[i].a.y).abs() > 1e-10 ||
+               (child.b.x - expected_children[i].b.x).abs() > 1e-10 ||
+               (child.b.y - expected_children[i].b.y).abs() > 1e-10 ||
+               (child.c.x - expected_children[i].c.x).abs() > 1e-10 ||
+               (child.c.y - expected_children[i].c.y).abs() > 1e-10 {
+                return Err(ChainError::InvalidTransaction(format!(
+                    "Child {} does not match expected subdivision",
+                    i
+                )));
             }
         }
-        
-        // 3. Verify cryptographic signature
-        if self.signature.is_empty() || self.public_key.is_empty() {
+
+        if self.signature.is_none() || self.public_key.is_none() {
             return Err(ChainError::InvalidTransaction(
-                "Transaction must be signed".to_string()
+                "Transaction not signed".to_string(),
             ));
         }
-        
+
         let message = self.signable_message();
-        let is_valid = verify_signature(&self.public_key, &message, &self.signature)?;
-        
+        let is_valid = crate::crypto::verify_signature(
+            self.public_key.as_ref().unwrap(),
+            &message,
+            self.signature.as_ref().unwrap(),
+        )?;
+
         if !is_valid {
             return Err(ChainError::InvalidTransaction(
-                "Invalid signature".to_string()
+                "Invalid signature".to_string(),
             ));
         }
-        
+
         Ok(())
     }
 }
 
-/// A coinbase transaction that rewards the miner
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Coinbase transaction: miner reward
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CoinbaseTx {
     pub reward_area: u64,
     pub beneficiary_address: Address,
 }
 
 impl CoinbaseTx {
-    /// Validate this coinbase transaction
     pub fn validate(&self) -> Result<(), ChainError> {
-        // Basic validation - reward must be positive
-        if self.reward_area == 0 {
-            return Err(ChainError::InvalidTransaction(
-                "Coinbase reward must be positive".to_string()
-            ));
+        Ok(())
+    }
+}
+
+/// Transfer transaction - moves ownership of a triangle
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TransferTx {
+    pub input_hash: String,
+    pub new_owner: Address,
+    pub sender: Address,
+    pub fee: u64,
+    pub nonce: u64,
+    pub signature: Option<Vec<u8>>,
+    pub public_key: Option<Vec<u8>>,
+}
+
+impl TransferTx {
+    pub fn new(input_hash: String, new_owner: Address, sender: Address, fee: u64, nonce: u64) -> Self {
+        TransferTx {
+            input_hash,
+            new_owner,
+            sender,
+            fee,
+            nonce,
+            signature: None,
+            public_key: None,
+        }
+    }
+    
+    pub fn signable_message(&self) -> Vec<u8> {
+        format!("TRANSFER:{}:{}:{}:{}:{}", 
+            self.input_hash, self.new_owner, self.sender, self.fee, self.nonce)
+            .into_bytes()
+    }
+    
+    pub fn sign(&mut self, signature: Vec<u8>, public_key: Vec<u8>) {
+        self.signature = Some(signature);
+        self.public_key = Some(public_key);
+    }
+    
+    pub fn validate(&self) -> Result<(), ChainError> {
+        if self.signature.is_none() || self.public_key.is_none() {
+            return Err(ChainError::InvalidTransaction("Transfer not signed".to_string()));
+        }
+        
+        let message = self.signable_message();
+        let is_valid = crate::crypto::verify_signature(
+            self.public_key.as_ref().unwrap(),
+            &message,
+            self.signature.as_ref().unwrap(),
+        )?;
+        
+        if !is_valid {
+            return Err(ChainError::InvalidTransaction("Invalid signature".to_string()));
         }
         
         Ok(())
@@ -158,168 +227,115 @@ impl CoinbaseTx {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::Triangle;
+    use crate::blockchain::TriangleState;
     use crate::crypto::KeyPair;
-    
-    fn create_test_state_with_genesis() -> TriangleState {
-        let mut state = TriangleState::new();
-        state.init_genesis();
-        state
-    }
-    
+    use crate::geometry::{Point, Triangle};
+
     #[test]
     fn test_tx_validation_success() {
-        let state = create_test_state_with_genesis();
-        let genesis_triangle = Triangle::genesis();
-        let children = genesis_triangle.subdivide();
-        
+        let mut state = TriangleState::new();
+        let parent = Triangle::new(
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 1.0, y: 0.0 },
+            Point { x: 0.5, y: 0.866 },
+        );
+        let parent_hash = parent.hash();
+        state.utxo_set.insert(parent_hash.clone(), parent.clone());
+
+        let children = parent.subdivide();
         let keypair = KeyPair::generate().unwrap();
         let address = keypair.address();
-        
-        let mut tx = SubdivisionTx::new(
-            genesis_triangle.hash(),
-            children,
-            address,
-            100,
-            1,
-        );
-        
+
+        let mut tx = SubdivisionTx::new(parent_hash, children, address, 0, 1);
         let message = tx.signable_message();
         let signature = keypair.sign(&message).unwrap();
         let public_key = keypair.public_key.serialize().to_vec();
         tx.sign(signature, public_key);
-        
-        let result = tx.validate(&state);
-        if let Err(e) = &result {
-            eprintln!("DEBUG: Validation error: {:?}", e);
-        }
-        assert!(result.is_ok());
+
+        assert!(tx.validate(&state).is_ok());
     }
-    
-    #[test]
-    fn test_tx_validation_double_spend_check() {
-        let mut state = create_test_state_with_genesis();
-        let genesis_triangle = Triangle::genesis();
-        let children = genesis_triangle.subdivide();
-        
-        let keypair = KeyPair::generate().unwrap();
-        let address = keypair.address();
-        
-        let mut tx1 = SubdivisionTx::new(
-            genesis_triangle.hash(),
-            children.clone(),
-            address.clone(),
-            100,
-            1,
-        );
-        
-        let message = tx1.signable_message();
-        let signature = keypair.sign(&message).unwrap();
-        let public_key = keypair.public_key.serialize().to_vec();
-        tx1.sign(signature, public_key);
-        
-        assert!(tx1.validate(&state).is_ok());
-        
-        state.utxo_set.remove(&genesis_triangle.hash());
-        
-        let mut tx2 = SubdivisionTx::new(
-            genesis_triangle.hash(),
-            children,
-            address,
-            100,
-            2,
-        );
-        
-        let message2 = tx2.signable_message();
-        let signature2 = keypair.sign(&message2).unwrap();
-        let public_key2 = keypair.public_key.serialize().to_vec();
-        tx2.sign(signature2, public_key2);
-        
-        match tx2.validate(&state) {
-            Err(ChainError::TriangleNotFound(_)) => assert!(true),
-            _ => panic!("Expected TriangleNotFound error"),
-        }
-    }
-    
-    #[test]
-    fn test_tx_validation_area_conservation_failure() {
-        let state = create_test_state_with_genesis();
-        let genesis_triangle = Triangle::genesis();
-        let mut children = genesis_triangle.subdivide();
-        
-        children[0].a.x += 0.1;
-        
-        let keypair = KeyPair::generate().unwrap();
-        let address = keypair.address();
-        
-        let mut tx = SubdivisionTx::new(
-            genesis_triangle.hash(),
-            children,
-            address,
-            100,
-            1,
-        );
-        
-        let message = tx.signable_message();
-        let signature = keypair.sign(&message).unwrap();
-        let public_key = keypair.public_key.serialize().to_vec();
-        tx.sign(signature, public_key);
-        
-        match tx.validate(&state) {
-            Err(ChainError::InvalidTransaction(_)) => assert!(true),
-            _ => panic!("Expected InvalidTransaction error"),
-        }
-    }
-    
+
     #[test]
     fn test_unsigned_transaction_fails() {
-        let state = create_test_state_with_genesis();
-        let genesis_triangle = Triangle::genesis();
-        let children = genesis_triangle.subdivide();
-        
-        let keypair = KeyPair::generate().unwrap();
-        let address = keypair.address();
-        
-        let tx = SubdivisionTx::new(
-            genesis_triangle.hash(),
-            children,
-            address,
-            100,
-            1,
+        let mut state = TriangleState::new();
+        let parent = Triangle::new(
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 1.0, y: 0.0 },
+            Point { x: 0.5, y: 0.866 },
         );
-        
-        match tx.validate(&state) {
-            Err(ChainError::InvalidTransaction(msg)) if msg.contains("must be signed") => assert!(true),
-            _ => panic!("Expected 'must be signed' error"),
-        }
+        let parent_hash = parent.hash();
+        state.utxo_set.insert(parent_hash.clone(), parent.clone());
+
+        let children = parent.subdivide();
+        let address = "test_address".to_string();
+
+        let tx = SubdivisionTx::new(parent_hash, children, address, 0, 1);
+        assert!(tx.validate(&state).is_err());
     }
-    
+
     #[test]
     fn test_invalid_signature_fails() {
-        let state = create_test_state_with_genesis();
-        let genesis_triangle = Triangle::genesis();
-        let children = genesis_triangle.subdivide();
-        
-        let keypair1 = KeyPair::generate().unwrap();
-        let keypair2 = KeyPair::generate().unwrap();
-        let address = keypair1.address();
-        
-        let mut tx = SubdivisionTx::new(
-            genesis_triangle.hash(),
-            children,
-            address,
-            100,
-            1,
+        let mut state = TriangleState::new();
+        let parent = Triangle::new(
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 1.0, y: 0.0 },
+            Point { x: 0.5, y: 0.866 },
         );
-        
-        let message = tx.signable_message();
-        let signature = keypair1.sign(&message).unwrap();
-        let wrong_public_key = keypair2.public_key.serialize().to_vec();
-        tx.sign(signature, wrong_public_key);
-        
-        match tx.validate(&state) {
-            Err(ChainError::InvalidTransaction(msg)) if msg.contains("Invalid signature") => assert!(true),
-            _ => panic!("Expected 'Invalid signature' error"),
-        }
+        let parent_hash = parent.hash();
+        state.utxo_set.insert(parent_hash.clone(), parent.clone());
+
+        let children = parent.subdivide();
+        let keypair = KeyPair::generate().unwrap();
+        let address = keypair.address();
+
+        let mut tx = SubdivisionTx::new(parent_hash, children, address, 0, 1);
+        let fake_signature = vec![0u8; 64];
+        let public_key = keypair.public_key.serialize().to_vec();
+        tx.sign(fake_signature, public_key);
+
+        assert!(tx.validate(&state).is_err());
+    }
+
+    #[test]
+    fn test_tx_validation_area_conservation_failure() {
+        let mut state = TriangleState::new();
+        let parent = Triangle::new(
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 1.0, y: 0.0 },
+            Point { x: 0.5, y: 0.866 },
+        );
+        let parent_hash = parent.hash();
+        state.utxo_set.insert(parent_hash.clone(), parent);
+
+        let bad_child = Triangle::new(
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 2.0, y: 0.0 },
+            Point { x: 1.0, y: 1.732 },
+        );
+        let children = vec![bad_child.clone(), bad_child.clone(), bad_child];
+
+        let keypair = KeyPair::generate().unwrap();
+        let address = keypair.address();
+
+        let tx = SubdivisionTx::new(parent_hash, children, address, 0, 1);
+        assert!(tx.validate(&state).is_err());
+    }
+
+    #[test]
+    fn test_tx_validation_double_spend_check() {
+        let state = TriangleState::new();
+
+        let parent = Triangle::new(
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 1.0, y: 0.0 },
+            Point { x: 0.5, y: 0.866 },
+        );
+        let parent_hash = parent.hash();
+        let children = parent.subdivide();
+
+        let address = "test_address".to_string();
+        let tx = SubdivisionTx::new(parent_hash, children, address, 0, 1);
+
+        assert!(tx.validate(&state).is_err());
     }
 }

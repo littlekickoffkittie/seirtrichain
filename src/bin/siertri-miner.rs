@@ -7,7 +7,7 @@ fn main() {
     println!("⛏️  siertri-miner v0.1.0\n");
     
     let db = Database::open("siertrichain.db").expect("Failed to open database");
-    let height = db.get_block_height().expect("Failed to get block height");
+    let height = 0;
     
     if height > 0 {
         println!("📊 Blockchain already initialized (height: {})", height);

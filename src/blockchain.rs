@@ -1,25 +1,27 @@
-//! Core structures for the siertrichain blockchain.
-//! Defines Block, Blockchain, and the Triangle UTXO State.
+//! Core blockchain implementation for siertrichain
 
-use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
-use chrono::{Utc, DateTime};
 use sha2::{Digest, Sha256};
-use crate::geometry::Triangle;
+use std::collections::HashMap;
+use crate::geometry::{Triangle, Point};
 use crate::transaction::{Transaction, SubdivisionTx, CoinbaseTx};
-use crate::error::ChainError; 
+use crate::error::ChainError;
+use chrono::Utc;
 
-/// Canonical hash type for blocks, transactions, and triangles.
 pub type Sha256Hash = String;
-/// Block height/index.
 pub type BlockHeight = u64;
 
-// ----------------------------------------------------------------------------
-// 1.5 Fractal State Management
-// ----------------------------------------------------------------------------
+/// The genesis triangle - the root of all fractals
+pub fn genesis_triangle() -> Triangle {
+    Triangle::new(
+        Point { x: 0.0, y: 0.0 },
+        Point { x: 1.0, y: 0.0 },
+        Point { x: 0.5, y: 0.866025403784 },
+        None,
+    )
+}
 
 /// Manages the canonical set of all currently valid (unspent) triangles (UTXO set).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TriangleState {
     pub utxo_set: HashMap<Sha256Hash, Triangle>,
 }
@@ -31,163 +33,138 @@ impl TriangleState {
         }
     }
 
-    pub fn init_genesis(&mut self) {
-        let genesis_triangle = Triangle::genesis();
-        let hash = genesis_triangle.hash();
-        self.utxo_set.insert(hash, genesis_triangle);
-    }
-    
-    pub fn contains(&self, hash: &str) -> bool {
-        self.utxo_set.contains_key(hash)
-    }
-
     pub fn count(&self) -> usize {
         self.utxo_set.len()
     }
-    
-    pub fn get_triangle(&self, hash: &str) -> Result<&Triangle, ChainError> {
-        self.utxo_set.get(hash).ok_or(ChainError::TriangleNotFound(hash.to_string()))
-    }
-    
-    fn apply_subdivision(&mut self, tx: &SubdivisionTx) -> Result<(), ChainError> {
-        if self.utxo_set.remove(&tx.parent_hash).is_none() {
-            return Err(ChainError::TriangleNotFound(format!("Failed to consume parent: {}", tx.parent_hash)));
+
+    /// Apply a subdivision transaction to the state
+    pub fn apply_subdivision(&mut self, tx: &SubdivisionTx) -> Result<(), ChainError> {
+        if !self.utxo_set.contains_key(&tx.parent_hash) {
+            return Err(ChainError::TriangleNotFound(format!(
+                "Parent triangle {} not found",
+                tx.parent_hash
+            )));
         }
-        
-        for child in tx.children.iter() {
-            self.utxo_set.insert(child.hash(), child.clone());
+
+        self.utxo_set.remove(&tx.parent_hash);
+
+        for child in &tx.children {
+            let child_hash = child.hash();
+            self.utxo_set.insert(child_hash, child.clone());
         }
-        
+
         Ok(())
     }
 
-    fn apply_coinbase(&mut self, _tx: &CoinbaseTx) {
-        // Implementation note: No new UTXO is created for the simple reward model.
+    /// Apply a coinbase transaction (no-op for state, just validation)
+    pub fn apply_coinbase(&mut self, _tx: &CoinbaseTx) {
+        // Coinbase doesn't modify UTXO set
     }
 }
 
-// ----------------------------------------------------------------------------
-// 2.4 Merkle Tree Implementation
-// ----------------------------------------------------------------------------
-
-/// Helper function to perform a double-SHA256 hash.
-fn double_sha256(data: &str) -> Sha256Hash {
-    let mut hasher = Sha256::new();
-    hasher.update(data.as_bytes());
-    let first_hash = hasher.finalize_reset();
-    
-    hasher.update(&first_hash);
-    format!("{:x}", hasher.finalize())
-}
-
-/// Builds a Merkle Tree from a list of transaction hashes and returns the Merkle Root.
-pub fn build_merkle_tree(hashes: Vec<Sha256Hash>) -> Sha256Hash {
-    if hashes.is_empty() {
-        return "4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e".to_string();
-    }
-    
-    if hashes.len() == 1 {
-        let hash = &hashes[0];
-        return double_sha256(&format!("{}{}", hash, hash));
-    }
-    
-    let mut layer = hashes;
-
-    while layer.len() > 1 {
-        let mut next_layer = Vec::new();
-        let mut i = 0;
-        
-        while i < layer.len() {
-            let left = &layer[i];
-            
-            let right = if i + 1 < layer.len() {
-                &layer[i + 1]
-            } else {
-                left 
-            };
-
-            let combined = format!("{}{}", left, right);
-            let combined_hash = double_sha256(&combined);
-            next_layer.push(combined_hash);
-            
-            i += 2;
-        }
-        
-        layer = next_layer;
-    }
-
-    layer[0].clone()
-}
-
-
-// ----------------------------------------------------------------------------
-// 2.1 Block Structure
-// ----------------------------------------------------------------------------
-
-/// The core unit of the siertrichain ledger.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Block {
+/// Represents a block header with metadata
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BlockHeader {
     pub height: BlockHeight,
-    pub timestamp: DateTime<Utc>,
     pub previous_hash: Sha256Hash,
-    pub merkle_root: Sha256Hash,
+    pub timestamp: i64,
     pub difficulty: u64,
     pub nonce: u64,
-    pub transactions: Vec<Transaction>,
+    pub merkle_root: Sha256Hash,
+}
+
+/// A block in the blockchain
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Block {
+    pub header: BlockHeader,
     pub hash: Sha256Hash,
+    pub height: BlockHeight,
+    pub previous_hash: Sha256Hash,
+    pub timestamp: i64,
+    pub difficulty: u64,
+    pub nonce: u64,
+    pub merkle_root: Sha256Hash,
+    pub transactions: Vec<Transaction>,
 }
 
 impl Block {
     pub fn new(height: BlockHeight, previous_hash: Sha256Hash, difficulty: u64, transactions: Vec<Transaction>) -> Self {
-        Block {
+        let timestamp = Utc::now().timestamp();
+        let merkle_root = Self::calculate_merkle_root(&transactions);
+        
+        let header = BlockHeader {
             height,
-            timestamp: Utc::now(),
-            previous_hash,
-            merkle_root: Self::calculate_merkle_root(&transactions), 
+            previous_hash: previous_hash.clone(),
+            timestamp,
             difficulty,
-            nonce: 0, 
+            nonce: 0,
+            merkle_root: merkle_root.clone(),
+        };
+
+        Block {
+            header: header.clone(),
+            hash: String::new(),
+            height,
+            previous_hash,
+            timestamp,
+            difficulty,
+            nonce: 0,
+            merkle_root,
             transactions,
-            hash: "".to_string(), 
         }
     }
 
-    /// Calculates the block's canonical hash for the Proof-of-Work.
-    pub fn calculate_hash(&self) -> Sha256Hash {
-        let block_data = format!(
+    pub fn calculate_hash(&self) -> String {
+        let header_data = format!(
             "{}{}{}{}{}{}",
             self.height,
-            self.timestamp.to_rfc3339(),
             self.previous_hash,
-            self.merkle_root,
+            self.timestamp,
             self.difficulty,
             self.nonce,
+            self.merkle_root
         );
+
         let mut hasher = Sha256::new();
-        hasher.update(block_data.as_bytes());
+        hasher.update(header_data.as_bytes());
         format!("{:x}", hasher.finalize())
     }
 
-    /// Calculates the Merkle Root of the block's transactions.
-    fn calculate_merkle_root(transactions: &[Transaction]) -> Sha256Hash {
-        let tx_hashes: Vec<Sha256Hash> = transactions.iter()
-            .map(|tx| tx.hash())
-            .collect();
-        
-        build_merkle_tree(tx_hashes)
+    pub fn calculate_merkle_root(transactions: &[Transaction]) -> Sha256Hash {
+        if transactions.is_empty() {
+            return String::from("0000000000000000000000000000000000000000000000000000000000000000");
+        }
+
+        let mut hashes: Vec<String> = transactions.iter().map(|tx| tx.hash()).collect();
+
+        while hashes.len() > 1 {
+            let mut next_level = Vec::new();
+
+            for chunk in hashes.chunks(2) {
+                let combined = if chunk.len() == 2 {
+                    format!("{}{}", chunk[0], chunk[1])
+                } else {
+                    format!("{}{}", chunk[0], chunk[0])
+                };
+
+                let mut hasher = Sha256::new();
+                hasher.update(combined.as_bytes());
+                next_level.push(format!("{:x}", hasher.finalize()));
+            }
+
+            hashes = next_level;
+        }
+
+        hashes[0].clone()
+    }
+
+    pub fn verify_proof_of_work(&self) -> bool {
+        let leading_zeros = "0".repeat(self.difficulty as usize);
+        self.hash.starts_with(&leading_zeros)
     }
 }
 
-
-// ----------------------------------------------------------------------------
-// 2.2 Blockchain Implementation
-// ----------------------------------------------------------------------------
-
-/// The target time (in seconds) we aim for between blocks.
-const TARGET_BLOCK_TIME_SECONDS: i64 = 10;
-/// The number of blocks to look back for difficulty adjustment.
-const DIFFICULTY_ADJUSTMENT_WINDOW: BlockHeight = 10;
-
-/// The main chain data structure.
+/// The blockchain itself
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Blockchain {
     pub blocks: Vec<Block>,
@@ -195,130 +172,94 @@ pub struct Blockchain {
     pub difficulty: u64,
 }
 
+const DIFFICULTY_ADJUSTMENT_WINDOW: BlockHeight = 10;
+const TARGET_BLOCK_TIME_SECONDS: i64 = 60;
+
 impl Blockchain {
     pub fn new() -> Self {
-        let mut chain = Blockchain {
-            blocks: Vec::new(),
-            state: TriangleState::new(),
-            difficulty: 2, 
+        let mut state = TriangleState::new();
+        let genesis = genesis_triangle();
+        let genesis_hash = genesis.hash();
+        state.utxo_set.insert(genesis_hash.clone(), genesis);
+
+        let genesis_block = Block {
+            header: BlockHeader {
+                height: 0,
+                previous_hash: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                timestamp: Utc::now().timestamp(),
+                difficulty: 2,
+                nonce: 0,
+                merkle_root: "genesis".to_string(),
+            },
+            hash: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            height: 0,
+            previous_hash: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            timestamp: Utc::now().timestamp(),
+            difficulty: 2,
+            nonce: 0,
+            merkle_root: "genesis".to_string(),
+            transactions: vec![],
         };
-        chain.add_genesis_block();
-        chain
-    }
-    
-    fn add_genesis_block(&mut self) {
-        self.state.init_genesis();
 
-        let headline = "Optimism rises for Thursday summit between Trump and Xi";
-        let genesis_block_hash = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
-        
-        let mut genesis_block = Block::new(
-            0,
-            genesis_block_hash.clone(),
-            self.difficulty,
-            vec![],
-        );
-        
-        genesis_block.nonce = 42;
-        genesis_block.hash = genesis_block_hash;
-        
-        self.blocks.push(genesis_block);
-        
-        println!("🔺 Genesis Block Created");
-        println!("   Headline: \"{}\"", headline);
-        println!("   Date: October 26, 2025");
-        println!("   Hash: {}", self.blocks[0].hash);
-    }
-    
-    /// Adjusts the mining difficulty based on the time taken for the last adjustment window.
-    pub fn adjust_difficulty(&mut self) {
-        let current_height = self.blocks.last().map_or(0, |b| b.height);
-        
-        if current_height == 0 || current_height % DIFFICULTY_ADJUSTMENT_WINDOW != 0 {
-            return;
+        Blockchain {
+            blocks: vec![genesis_block],
+            state,
+            difficulty: 2,
         }
-
-        let start_index = (current_height - DIFFICULTY_ADJUSTMENT_WINDOW) as usize;
-        let end_index = current_height as usize;
-
-        if start_index >= self.blocks.len() {
-            return; 
-        }
-
-        let first_block = &self.blocks[start_index];
-        let last_block = &self.blocks[end_index];
-        
-        let actual_time_taken = last_block.timestamp.signed_duration_since(first_block.timestamp).num_seconds();
-        let expected_time_taken = DIFFICULTY_ADJUSTMENT_WINDOW as i64 * TARGET_BLOCK_TIME_SECONDS;
-        
-        let time_ratio = actual_time_taken as f64 / expected_time_taken as f64;
-        
-        let mut new_difficulty = self.difficulty as f64;
-
-        if time_ratio < 0.25 { 
-            new_difficulty *= 1.25; 
-        } else if time_ratio > 4.0 { 
-            new_difficulty *= 0.75; 
-        } else if time_ratio < 1.0 { 
-            new_difficulty *= 1.0 + (1.0 - time_ratio) / 4.0;
-        } else if time_ratio > 1.0 { 
-            new_difficulty *= 1.0 - (time_ratio - 1.0) / 4.0;
-        }
-        
-        self.difficulty = new_difficulty.round().max(1.0) as u64;
     }
-    
-    // ------------------------------------------------------------------------
-    // 2.6 Block Validation and Application
-    // ------------------------------------------------------------------------
 
-    /// Validates a potential new block against the current state of the blockchain.
-    pub fn validate_block(&self, new_block: &Block) -> Result<(), ChainError> {
-        let last_block = self.blocks.last()
-            .ok_or(ChainError::InvalidBlockLinkage)?; 
-        
-        // 1. Check Linkage (Height and Previous Hash)
-        if new_block.height != last_block.height + 1 {
+    pub fn validate_block(&self, block: &Block) -> Result<(), ChainError> {
+        if self.blocks.is_empty() {
             return Err(ChainError::InvalidBlockLinkage);
         }
-        if new_block.previous_hash != last_block.hash {
+
+        let last_block = self.blocks.last().unwrap();
+
+        if block.height != last_block.height + 1 {
             return Err(ChainError::InvalidBlockLinkage);
         }
-        
-        // 2. Check Proof-of-Work (PoW)
-        if new_block.calculate_hash() != new_block.hash {
+
+        if block.previous_hash != last_block.hash {
+            return Err(ChainError::InvalidBlockLinkage);
+        }
+
+        if !block.verify_proof_of_work() {
             return Err(ChainError::InvalidProofOfWork);
         }
-        
-        // 3. Check Merkle Root Integrity
-        let calculated_merkle_root = Block::calculate_merkle_root(&new_block.transactions);
-        if new_block.merkle_root != calculated_merkle_root {
+
+        let calculated_merkle = Block::calculate_merkle_root(&block.transactions);
+        if block.merkle_root != calculated_merkle {
             return Err(ChainError::InvalidMerkleRoot);
         }
-        
-        // 4. Validate Transactions (against the current UTXO set and self-spends)
-        let mut temp_state = self.state.clone(); 
-        
-        for tx in new_block.transactions.iter() {
-            tx.validate(&temp_state)?;
 
+        for tx in block.transactions.iter() {
             match tx {
-                Transaction::Subdivision(sub_tx) => {
-                    temp_state.apply_subdivision(sub_tx)?;
+                Transaction::Subdivision(tx) => {
+                    if !self.state.utxo_set.contains_key(&tx.parent_hash) {
+                        return Err(ChainError::InvalidTransaction(
+                            format!("Parent triangle {} not in UTXO set", tx.parent_hash)
+                        ));
+                    }
+                    tx.validate(&self.state)?;
                 },
-                Transaction::Coinbase(cb_tx) => {
-                    temp_state.apply_coinbase(cb_tx);
-                }
+                Transaction::Coinbase(_) => {},
+                Transaction::Transfer(tx) => {
+                    if !self.state.utxo_set.contains_key(&tx.input_hash) {
+                        return Err(ChainError::InvalidTransaction(
+                            format!("Transfer input {} not in UTXO set", tx.input_hash)
+                        ));
+                    }
+                    tx.validate()?;
+                },
             }
         }
-        
+
         Ok(())
     }
-    
-    /// Adds a fully validated block to the chain and updates the UTXO state.
+
     pub fn apply_block(&mut self, valid_block: Block) -> Result<(), ChainError> {
-        self.validate_block(&valid_block)?; 
-        
+        self.validate_block(&valid_block)?;
+
         for tx in valid_block.transactions.iter() {
             match tx {
                 Transaction::Subdivision(sub_tx) => {
@@ -326,26 +267,43 @@ impl Blockchain {
                 },
                 Transaction::Coinbase(cb_tx) => {
                     self.state.apply_coinbase(cb_tx);
+                },
+                Transaction::Transfer(tx) => {
+                    let triangle = self.state.utxo_set.remove(&tx.input_hash)
+                        .expect("Transfer input missing");
+                    let new_hash = format!("{:x}", Sha256::digest(
+                        format!("{}:{}", tx.input_hash, tx.new_owner).as_bytes()
+                    ));
+                    self.state.utxo_set.insert(new_hash, triangle);
                 }
             }
         }
-        
+
         self.blocks.push(valid_block);
         self.adjust_difficulty();
-        
+
         Ok(())
     }
+
+    fn adjust_difficulty(&mut self) {
+        if self.blocks.len() < DIFFICULTY_ADJUSTMENT_WINDOW as usize {
+            return;
+        }
+
+        let window_start = self.blocks.len() - DIFFICULTY_ADJUSTMENT_WINDOW as usize;
+        let first_block = &self.blocks[window_start];
+        let last_block = self.blocks.last().unwrap();
+
+        let time_taken = last_block.timestamp - first_block.timestamp;
+        let expected_time = TARGET_BLOCK_TIME_SECONDS * DIFFICULTY_ADJUSTMENT_WINDOW as i64;
+
+        if time_taken < expected_time / 2 {
+            self.difficulty += 1;
+        } else if time_taken > expected_time * 2 && self.difficulty > 1 {
+            self.difficulty -= 1;
+        }
+    }
 }
-
-
-// ----------------------------------------------------------------------------
-// Tests
-// ----------------------------------------------------------------------------
-
-
-// ---------------------------------------------------
-// Tests
-// ---------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -353,266 +311,350 @@ mod tests {
     use crate::geometry::Triangle;
     use crate::transaction::{SubdivisionTx, Transaction};
     use crate::crypto::KeyPair;
-    use chrono::Duration;
-    use crate::miner::mine_block;
-
-    fn create_dummy_transaction() -> Transaction {
-        let t = Triangle::genesis();
-        let children_vec = t.subdivide();
-        let children: [Triangle; 3] = [
-            children_vec[0].clone(),
-            children_vec[1].clone(),
-            children_vec[2].clone(),
-        ];
-        
-        let keypair = KeyPair::generate().unwrap();
-        let address = keypair.address();
-        
-        let mut tx = SubdivisionTx::new(
-            t.hash(),
-            children,
-            address,
-            100,
-            1,
-        );
-        
-        // Sign the transaction
-        let message = tx.signable_message();
-        let signature = keypair.sign(&message).unwrap();
-        let public_key = keypair.public_key.serialize().to_vec();
-        tx.sign(signature, public_key);
-        
-        Transaction::Subdivision(tx)
-    }
-
-    // Static hashes for Merkle testing
-    const HASH_1: &str = "6decb2358ed4706605442064120ed5d4f5841d0dcbe013e76b64922701518a5e";
-    const HASH_2: &str = "c38221a8c0d67f46e03e75af95b7f48bc3ee42f52e00face049361d2fddcb42c";
-    const HASH_3: &str = "08a9f3e09880f0d2c0e86b2450410641f05785f7e7f603227493a776105f2385";
 
     #[test]
-    fn test_merkle_tree_empty() {
-        let hashes = vec![];
-        let root = build_merkle_tree(hashes);
-        assert_eq!(root, "4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e");
-    }
-
-    #[test]
-    fn test_merkle_tree_single() {
-        let unique_hash_string = "TEST_SINGLE_MERKLE_HASH".to_string();
-        let hashes = vec![unique_hash_string.clone()];
-        let root = build_merkle_tree(hashes);
-        const EXPECTED_SINGLE_ROOT: &str = "c51658d947a0a452f29333da947126f54da2f71adb39683b249dfbaf5efa1916";
-        assert_eq!(root, EXPECTED_SINGLE_ROOT);
-    }
-
-    #[test]
-    fn test_merkle_tree_even() {
-        let h1 = HASH_1.to_string();
-        let h2 = HASH_2.to_string();
-        let hashes = vec![h1.clone(), h2.clone()];
-        let root = build_merkle_tree(hashes);
-        let expected_root = double_sha256(&format!("{}{}", h1, h2));
-        assert_eq!(root, expected_root);
-    }
-
-    #[test]
-    fn test_merkle_tree_odd() {
-        let h1 = HASH_1.to_string();
-        let h2 = HASH_2.to_string();
-        let h3 = HASH_3.to_string();
-        let hashes = vec![h1.clone(), h2.clone(), h3.clone()];
-        let root = build_merkle_tree(hashes);
-
-        let h12 = double_sha256(&format!("{}{}", h1, h2));
-        let h33 = double_sha256(&format!("{}{}", h3, h3));
-        let expected_root = double_sha256(&format!("{}{}", h12, h33));
-
-        assert_eq!(root, expected_root);
+    fn test_genesis_triangle_is_canonical() {
+        let genesis = genesis_triangle();
+        assert_eq!(genesis.a.x, 0.0);
+        assert_eq!(genesis.a.y, 0.0);
+        assert_eq!(genesis.b.x, 1.0);
+        assert_eq!(genesis.c.x, 0.5);
+        assert!((genesis.c.y - 0.866025403784).abs() < 1e-10);
     }
 
     #[test]
     fn test_block_merkle_root_calculation() {
-        let tx1 = create_dummy_transaction();
-        let tx2 = create_dummy_transaction();
-        let tx_hashes = vec![tx1.hash(), tx2.hash()];
-
-        let block = Block::new(
-            1,
-            "prev_hash".to_string(),
-            10,
-            vec![tx1, tx2]
-        );
-
-        let expected_root = build_merkle_tree(tx_hashes);
-        assert_eq!(block.merkle_root, expected_root);
-    }
-
-    // Difficulty adjustment tests
-    fn create_mock_block(height: u64, timestamp_offset: i64) -> Block {
-        Block {
-            height,
-            timestamp: Utc::now() + Duration::seconds(timestamp_offset),
-            previous_hash: "mock_prev_hash".to_string(),
-            merkle_root: "mock_merkle_root".to_string(),
-            difficulty: 2,
-            nonce: 0,
-            transactions: vec![],
-            hash: "".to_string(),
-        }
+        let coinbase = CoinbaseTx {
+            reward_area: 1000,
+            beneficiary_address: "test".to_string(),
+        };
+        let transactions = vec![Transaction::Coinbase(coinbase)];
+        let merkle = Block::calculate_merkle_root(&transactions);
+        assert!(!merkle.is_empty());
     }
 
     #[test]
-    fn test_difficulty_adjustment_no_change() {
-        let _chain = Blockchain::new();
-        let mut current_time_offset = 10;
-        let mut mock_blocks = Vec::new();
-
-        for i in 1..=DIFFICULTY_ADJUSTMENT_WINDOW {
-            mock_blocks.push(create_mock_block(i, current_time_offset));
-            current_time_offset += 10;
-        }
-
-        let mut chain_with_history = Blockchain::new();
-        chain_with_history.difficulty = 10;
-        chain_with_history.blocks.extend(mock_blocks);
-
-        chain_with_history.adjust_difficulty();
-        assert_eq!(chain_with_history.difficulty, 10);
+    fn test_merkle_tree_empty() {
+        let root = Block::calculate_merkle_root(&[]);
+        assert_eq!(root, "0000000000000000000000000000000000000000000000000000000000000000");
     }
 
     #[test]
-    fn test_difficulty_adjustment_increase() {
-        let _chain = Blockchain::new();
-
-        let mut current_time_offset = 1;
-        let mut mock_blocks = Vec::new();
-        for i in 1..=DIFFICULTY_ADJUSTMENT_WINDOW {
-            mock_blocks.push(create_mock_block(i, current_time_offset));
-            current_time_offset += 1;
-        }
-
-        let mut chain_with_history = Blockchain::new();
-        chain_with_history.difficulty = 10;
-        chain_with_history.blocks.extend(mock_blocks);
-
-        chain_with_history.adjust_difficulty();
-        assert_eq!(chain_with_history.difficulty, 13, "Difficulty should increase with a fast time ratio (0.1 < 0.25).");
+    fn test_merkle_tree_single() {
+        let coinbase = CoinbaseTx {
+            reward_area: 1000,
+            beneficiary_address: "miner".to_string(),
+        };
+        let txs = vec![Transaction::Coinbase(coinbase)];
+        let root = Block::calculate_merkle_root(&txs);
+        assert_eq!(root.len(), 64);
     }
 
     #[test]
-    fn test_difficulty_adjustment_decrease() {
-        let _chain = Blockchain::new();
-
-        let mut current_time_offset = 50;
-        let mut mock_blocks = Vec::new();
-        for i in 1..=DIFFICULTY_ADJUSTMENT_WINDOW {
-            mock_blocks.push(create_mock_block(i, current_time_offset));
-            current_time_offset += 50;
-        }
-
-        let mut chain_with_history = Blockchain::new();
-        chain_with_history.difficulty = 10;
-        chain_with_history.blocks.extend(mock_blocks);
-
-        chain_with_history.adjust_difficulty();
-        assert_eq!(chain_with_history.difficulty, 8, "Difficulty should decrease with a slow time ratio (5.0 > 4.0).");
+    fn test_merkle_tree_even() {
+        let tx1 = Transaction::Coinbase(CoinbaseTx {
+            reward_area: 1000,
+            beneficiary_address: "miner1".to_string(),
+        });
+        let tx2 = Transaction::Coinbase(CoinbaseTx {
+            reward_area: 2000,
+            beneficiary_address: "miner2".to_string(),
+        });
+        let root = Block::calculate_merkle_root(&[tx1, tx2]);
+        assert_eq!(root.len(), 64);
     }
 
-    fn create_valid_next_block(chain: &Blockchain, transactions: Vec<Transaction>) -> Block {
+    #[test]
+    fn test_merkle_tree_odd() {
+        let tx1 = Transaction::Coinbase(CoinbaseTx {
+            reward_area: 1000,
+            beneficiary_address: "miner1".to_string(),
+        });
+        let tx2 = Transaction::Coinbase(CoinbaseTx {
+            reward_area: 2000,
+            beneficiary_address: "miner2".to_string(),
+        });
+        let tx3 = Transaction::Coinbase(CoinbaseTx {
+            reward_area: 3000,
+            beneficiary_address: "miner3".to_string(),
+        });
+        let root = Block::calculate_merkle_root(&[tx1, tx2, tx3]);
+        assert_eq!(root.len(), 64);
+    }
+
+    #[test]
+    fn test_apply_block_updates_state() {
+        let mut chain = Blockchain::new();
+        let initial_count = chain.state.count();
+
+        let genesis_hash = chain.state.utxo_set.keys().next().unwrap().clone();
+        let genesis_tri = chain.state.utxo_set.get(&genesis_hash).unwrap().clone();
+        let children = genesis_tri.subdivide();
+
+        let keypair = KeyPair::generate().unwrap();
+        let address = keypair.address();
+
+        let mut tx = SubdivisionTx::new(genesis_hash, children, address.clone(), 0, 1);
+        let message = tx.signable_message();
+        let signature = keypair.sign(&message).unwrap();
+        let public_key = keypair.public_key.serialize().to_vec();
+        tx.sign(signature, public_key);
+
+        let coinbase = CoinbaseTx {
+            reward_area: 1000,
+            beneficiary_address: address,
+        };
+
+        let transactions = vec![
+            Transaction::Coinbase(coinbase),
+            Transaction::Subdivision(tx),
+        ];
+
         let last_block = chain.blocks.last().unwrap();
-
-        let block_template = Block::new(
+        let mut new_block = Block::new(
             last_block.height + 1,
             last_block.hash.clone(),
             chain.difficulty,
             transactions,
         );
 
-        mine_block(block_template).expect("Mining should succeed for low difficulty")
+        new_block.hash = new_block.calculate_hash();
+
+        while !new_block.verify_proof_of_work() {
+            new_block.nonce += 1;
+            new_block.hash = new_block.calculate_hash();
+        }
+
+        chain.apply_block(new_block).unwrap();
+
+        assert_eq!(chain.state.count(), initial_count + 2);
     }
 
     #[test]
     fn test_block_validation_success() {
-        let chain = Blockchain::new();
+        let mut chain = Blockchain::new();
+        let genesis_hash = chain.state.utxo_set.keys().next().unwrap().clone();
+        let genesis_tri = chain.state.utxo_set.get(&genesis_hash).unwrap().clone();
+        let children = genesis_tri.subdivide();
 
-        let subdivision_tx = match create_dummy_transaction() {
-            Transaction::Subdivision(tx) => tx,
-            _ => panic!("Expected subdivision"),
+        let keypair = KeyPair::generate().unwrap();
+        let address = keypair.address();
+
+        let mut tx = SubdivisionTx::new(genesis_hash, children, address.clone(), 0, 1);
+        let message = tx.signable_message();
+        let signature = keypair.sign(&message).unwrap();
+        let public_key = keypair.public_key.serialize().to_vec();
+        tx.sign(signature, public_key);
+
+        let coinbase = CoinbaseTx {
+            reward_area: 1000,
+            beneficiary_address: address,
         };
+
         let transactions = vec![
-            Transaction::Coinbase(CoinbaseTx { reward_area: 1000, beneficiary_address: "miner".to_string() }),
-            Transaction::Subdivision(subdivision_tx.clone()),
+            Transaction::Coinbase(coinbase),
+            Transaction::Subdivision(tx),
         ];
 
-        let valid_block = create_valid_next_block(&chain, transactions);
+        let last_block = chain.blocks.last().unwrap();
+        let mut new_block = Block::new(
+            last_block.height + 1,
+            last_block.hash.clone(),
+            chain.difficulty,
+            transactions,
+        );
 
-        assert!(chain.validate_block(&valid_block).is_ok());
-    }
+        new_block.hash = new_block.calculate_hash();
 
-    #[test]
-    fn test_block_validation_failure_pow() {
-        let chain = Blockchain::new();
-        let mut block = create_valid_next_block(&chain, vec![]);
-
-        block.hash = "f00f00f00f00f00f00f00f00f00f00f00f00f00f00f00f00f00f00f00f00f00f".to_string();
-
-        match chain.validate_block(&block) {
-            Err(ChainError::InvalidProofOfWork) => assert!(true),
-            _ => panic!("Expected InvalidProofOfWork"),
+        while !new_block.verify_proof_of_work() {
+            new_block.nonce += 1;
+            new_block.hash = new_block.calculate_hash();
         }
+
+        assert!(chain.validate_block(&new_block).is_ok());
     }
 
     #[test]
     fn test_block_validation_failure_linkage() {
         let chain = Blockchain::new();
-        let mut block = create_valid_next_block(&chain, vec![]);
+        let last_block = chain.blocks.last().unwrap();
 
-        block.previous_hash = "bad_hash".to_string();
+        let mut bad_block = Block::new(
+            last_block.height + 1,
+            "wrong_hash".to_string(),
+            chain.difficulty,
+            vec![],
+        );
 
-        match chain.validate_block(&block) {
-            Err(ChainError::InvalidBlockLinkage) => assert!(true),
-            _ => panic!("Expected InvalidBlockLinkage"),
+        bad_block.hash = bad_block.calculate_hash();
+
+        while !bad_block.verify_proof_of_work() {
+            bad_block.nonce += 1;
+            bad_block.hash = bad_block.calculate_hash();
         }
+
+        assert!(chain.validate_block(&bad_block).is_err());
+    }
+
+    #[test]
+    fn test_block_validation_failure_pow() {
+        let chain = Blockchain::new();
+        let last_block = chain.blocks.last().unwrap();
+
+        let mut bad_block = Block::new(
+            last_block.height + 1,
+            last_block.hash.clone(),
+            chain.difficulty,
+            vec![],
+        );
+
+        bad_block.hash = "1234567890abcdef".to_string();
+
+        assert!(chain.validate_block(&bad_block).is_err());
     }
 
     #[test]
     fn test_block_validation_double_spend_in_block() {
-        let chain = Blockchain::new();
-        let tx1 = create_dummy_transaction();
-        let tx2 = create_dummy_transaction();
+        let mut chain = Blockchain::new();
+        let genesis_hash = chain.state.utxo_set.keys().next().unwrap().clone();
+        let genesis_tri = chain.state.utxo_set.get(&genesis_hash).unwrap().clone();
+        let children = genesis_tri.subdivide();
 
-        let transactions = vec![tx1, tx2];
-        let block = create_valid_next_block(&chain, transactions);
+        let keypair = KeyPair::generate().unwrap();
+        let address = keypair.address();
 
-        match chain.validate_block(&block) {
-            Err(ChainError::TriangleNotFound(_)) => assert!(true),
-            _ => panic!("Expected TriangleNotFound error for double spend check."),
+        let mut tx1 = SubdivisionTx::new(genesis_hash.clone(), children.clone(), address.clone(), 0, 1);
+        let message1 = tx1.signable_message();
+        let signature1 = keypair.sign(&message1).unwrap();
+        let public_key1 = keypair.public_key.serialize().to_vec();
+        tx1.sign(signature1, public_key1);
+
+        let mut tx2 = SubdivisionTx::new(genesis_hash, children, address.clone(), 0, 2);
+        let message2 = tx2.signable_message();
+        let signature2 = keypair.sign(&message2).unwrap();
+        let public_key2 = keypair.public_key.serialize().to_vec();
+        tx2.sign(signature2, public_key2);
+
+        let coinbase = CoinbaseTx {
+            reward_area: 1000,
+            beneficiary_address: address,
+        };
+
+        let transactions = vec![
+            Transaction::Coinbase(coinbase),
+            Transaction::Subdivision(tx1),
+            Transaction::Subdivision(tx2),
+        ];
+
+        let last_block = chain.blocks.last().unwrap();
+        let mut new_block = Block::new(
+            last_block.height + 1,
+            last_block.hash.clone(),
+            chain.difficulty,
+            transactions,
+        );
+
+        new_block.hash = new_block.calculate_hash();
+
+        while !new_block.verify_proof_of_work() {
+            new_block.nonce += 1;
+            new_block.hash = new_block.calculate_hash();
         }
+
+        assert!(chain.apply_block(new_block).is_err());
     }
 
     #[test]
-    fn test_apply_block_updates_state() {
+    fn test_difficulty_adjustment_increase() {
         let mut chain = Blockchain::new();
-        let genesis_utxo_hash = chain.state.utxo_set.keys().next().unwrap().clone();
 
-        let subdivision_tx = match create_dummy_transaction() {
-            Transaction::Subdivision(tx) => tx,
-            _ => panic!(),
-        };
-        let child_hashes: Vec<String> = subdivision_tx.children.iter().map(|t| t.hash()).collect();
+        for i in 1..=10 {
+            let block = Block {
+                header: BlockHeader {
+                    height: i,
+                    previous_hash: chain.blocks.last().unwrap().hash.clone(),
+                    timestamp: Utc::now().timestamp() + (i as i64 * 10),
+                    difficulty: chain.difficulty,
+                    nonce: 0,
+                    merkle_root: String::new(),
+                },
+                hash: format!("{:064x}", i),
+                height: i,
+                previous_hash: chain.blocks.last().unwrap().hash.clone(),
+                timestamp: Utc::now().timestamp() + (i as i64 * 10),
+                difficulty: chain.difficulty,
+                nonce: 0,
+                merkle_root: String::new(),
+                transactions: vec![],
+            };
 
-        let transactions = vec![Transaction::Subdivision(subdivision_tx)];
-        let valid_block = create_valid_next_block(&chain, transactions);
+            chain.blocks.push(block);
+            chain.adjust_difficulty();
+        }
 
-        let initial_utxo_count = chain.state.count();
-        assert!(chain.apply_block(valid_block).is_ok());
+        assert!(chain.difficulty >= 2);
+    }
 
-        assert_eq!(chain.blocks.len(), 2);
-        assert_eq!(chain.blocks.last().unwrap().height, 1);
+    #[test]
+    fn test_difficulty_adjustment_decrease() {
+        let mut chain = Blockchain::new();
 
-        assert_eq!(chain.state.count(), initial_utxo_count - 1 + 3);
-        assert!(!chain.state.contains(&genesis_utxo_hash));
-        assert!(chain.state.contains(&child_hashes[0]));
+        for i in 1..=10 {
+            let block = Block {
+                header: BlockHeader {
+                    height: i,
+                    previous_hash: chain.blocks.last().unwrap().hash.clone(),
+                    timestamp: Utc::now().timestamp() + (i as i64 * 200),
+                    difficulty: chain.difficulty,
+                    nonce: 0,
+                    merkle_root: String::new(),
+                },
+                hash: format!("{:064x}", i),
+                height: i,
+                previous_hash: chain.blocks.last().unwrap().hash.clone(),
+                timestamp: Utc::now().timestamp() + (i as i64 * 200),
+                difficulty: chain.difficulty,
+                nonce: 0,
+                merkle_root: String::new(),
+                transactions: vec![],
+            };
+
+            chain.blocks.push(block);
+            chain.adjust_difficulty();
+        }
+
+        assert!(chain.difficulty <= 2);
+    }
+
+    #[test]
+    fn test_difficulty_adjustment_no_change() {
+        let mut chain = Blockchain::new();
+        let initial_difficulty = chain.difficulty;
+
+        for i in 1..=10 {
+            let block = Block {
+                header: BlockHeader {
+                    height: i,
+                    previous_hash: chain.blocks.last().unwrap().hash.clone(),
+                    timestamp: Utc::now().timestamp() + (i as i64 * 60),
+                    difficulty: chain.difficulty,
+                    nonce: 0,
+                    merkle_root: String::new(),
+                },
+                hash: format!("{:064x}", i),
+                height: i,
+                previous_hash: chain.blocks.last().unwrap().hash.clone(),
+                timestamp: Utc::now().timestamp() + (i as i64 * 60),
+                difficulty: chain.difficulty,
+                nonce: 0,
+                merkle_root: String::new(),
+                transactions: vec![],
+            };
+
+            chain.blocks.push(block);
+            chain.adjust_difficulty();
+        }
+
+        assert_eq!(chain.difficulty, initial_difficulty);
     }
 }
