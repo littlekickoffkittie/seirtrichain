@@ -1,77 +1,172 @@
-//! Wallet CLI for siertrichain
+//! Wallet CLI for siertrichain - Beautiful edition!
 
-use siertrichain::crypto::KeyPair;
-use std::fs;
+use siertrichain::wallet::{self, Wallet};
+use colored::*;
+
+const LOGO: &str = r#"
+╔═══════════════════════════════════════════════════════════════╗
+║                                                               ║
+║         ███████╗██╗███████╗██████╗ ████████╗██████╗ ██╗      ║
+║         ██╔════╝██║██╔════╝██╔══██╗╚══██╔══╝██╔══██╗██║      ║
+║         ███████╗██║█████╗  ██████╔╝   ██║   ██████╔╝██║      ║
+║         ╚════██║██║██╔══╝  ██╔══██╗   ██║   ██╔══██╗██║      ║
+║         ███████║██║███████╗██║  ██║   ██║   ██║  ██║██║      ║
+║         ╚══════╝╚═╝╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝      ║
+║                                                               ║
+║              🔺 Fractal Blockchain Wallet Manager 🔺          ║
+║                    Version 0.1.0 - Alpha                     ║
+╚═══════════════════════════════════════════════════════════════╝
+"#;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    
+
     if args.len() < 2 {
         print_usage();
         return;
     }
-    
+
     match args[1].as_str() {
         "new" => create_wallet(),
         "address" => show_address(),
+        "list" => list_wallets(),
         "help" => print_usage(),
         _ => {
-            println!("Unknown command: {}", args[1]);
+            println!("{}", format!("❌ Unknown command: {}", args[1]).red().bold());
             print_usage();
         }
     }
 }
 
+fn print_banner() {
+    println!("{}", LOGO.bright_cyan());
+}
+
 fn create_wallet() {
-    let wallet_dir = std::env::var("HOME").unwrap() + "/.siertrichain";
-    fs::create_dir_all(&wallet_dir).expect("Failed to create wallet directory");
-    
-    let keypair = KeyPair::generate().expect("Failed to generate keypair");
-    let address = keypair.address();
-    
-    let wallet_file = wallet_dir.clone() + "/wallet.json";
-    
-    if std::path::Path::new(&wallet_file).exists() {
-        println!("⚠️  Wallet already exists");
-        println!("   Address: {}", address);
-        return;
+    print_banner();
+
+    println!("{}", "┌─────────────────────────────────────────┐".bright_green());
+    println!("{}", "│       🔑 Creating New Wallet...        │".bright_green());
+    println!("{}", "└─────────────────────────────────────────┘".bright_green());
+    println!();
+
+    match wallet::create_default_wallet() {
+        Ok(wallet) => {
+            println!("{}", "╔══════════════════════════════════════════════════════════╗".green());
+            println!("{}", "║            ✨ Wallet Created Successfully! ✨            ║".green().bold());
+            println!("{}", "╠══════════════════════════════════════════════════════════╣".green());
+            println!("{}", format!("║  📍 Address: {:<42} ║", &wallet.address[..42]).green());
+            println!("{}", format!("║             {:<42} ║", &wallet.address[42..]).green());
+            println!("{}", format!("║  📁 Location: {:<39} ║", wallet::get_default_wallet_path().display()).green());
+            println!("{}", format!("║  📅 Created: {:<40} ║", wallet.created).green());
+            println!("{}", "╚══════════════════════════════════════════════════════════╝".green());
+            println!();
+            println!("{}", "⚠️  IMPORTANT SECURITY NOTICE:".yellow().bold());
+            println!("{}", "   • Backup your wallet file immediately!".yellow());
+            println!("{}", "   • Never share your secret key".yellow());
+            println!("{}", "   • Store backups in a secure location".yellow());
+            println!();
+        },
+        Err(e) => {
+            println!("{}", "╔══════════════════════════════════════════╗".red());
+            println!("{}", "║       ❌ Wallet Creation Failed!        ║".red().bold());
+            println!("{}", "╠══════════════════════════════════════════╣".red());
+            println!("{}", format!("║  Error: {:<32} ║", e.to_string()).red());
+            println!("{}", "╚══════════════════════════════════════════╝".red());
+            println!();
+        }
     }
-    
-    let secret_hex = hex::encode(keypair.secret_key.secret_bytes());
-    let wallet_data = serde_json::json!({
-        "address": address,
-        "secret_key": secret_hex,
-        "created": chrono::Utc::now().to_rfc3339(),
-    });
-    
-    fs::write(&wallet_file, serde_json::to_string_pretty(&wallet_data).unwrap())
-        .expect("Failed to write wallet file");
-    
-    println!("🔑 New wallet created!");
-    println!("   Address: {}", address);
-    println!("   Location: {}", wallet_file);
-    println!("\n⚠️  IMPORTANT: Backup your wallet file!");
 }
 
 fn show_address() {
-    let wallet_file = std::env::var("HOME").unwrap() + "/.siertrichain/wallet.json";
-    
-    if !std::path::Path::new(&wallet_file).exists() {
-        println!("❌ No wallet found. Run 'siertri-wallet new' first.");
-        return;
+    print_banner();
+
+    println!("{}", "┌─────────────────────────────────────────┐".bright_cyan());
+    println!("{}", "│      📍 Your Wallet Address...         │".bright_cyan());
+    println!("{}", "└─────────────────────────────────────────┘".bright_cyan());
+    println!();
+
+    match wallet::load_default_wallet() {
+        Ok(wallet) => {
+            println!("{}", "╔══════════════════════════════════════════════════════════╗".cyan());
+            println!("{}", "║                   Your Wallet Details                    ║".cyan().bold());
+            println!("{}", "╠══════════════════════════════════════════════════════════╣".cyan());
+            println!("{}", format!("║  📍 Address: {:<42} ║", &wallet.address[..42]).cyan());
+            println!("{}", format!("║             {:<42} ║", &wallet.address[42..]).cyan());
+            println!("{}", format!("║  📅 Created: {:<40} ║", wallet.created).cyan());
+            println!("{}", "╚══════════════════════════════════════════════════════════╝".cyan());
+            println!();
+            println!("{}", "💡 Tip: Share this address to receive triangles!".bright_blue());
+            println!();
+        },
+        Err(e) => {
+            println!("{}", "╔══════════════════════════════════════════╗".red());
+            println!("{}", "║         ❌ Wallet Not Found!            ║".red().bold());
+            println!("{}", "╠══════════════════════════════════════════╣".red());
+            println!("{}", format!("║  Error: {:<32} ║", e.to_string()).red());
+            println!("{}", "╚══════════════════════════════════════════╝".red());
+            println!();
+            println!("{}", "💡 Run 'siertri-wallet new' to create a wallet".yellow());
+            println!();
+        }
     }
-    
-    let wallet_data: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(&wallet_file).expect("Failed to read wallet")
-    ).expect("Failed to parse wallet");
-    
-    println!("📍 Your address: {}", wallet_data["address"].as_str().unwrap());
+}
+
+fn list_wallets() {
+    print_banner();
+
+    println!("{}", "┌─────────────────────────────────────────┐".bright_magenta());
+    println!("{}", "│      📋 Available Wallets...           │".bright_magenta());
+    println!("{}", "└─────────────────────────────────────────┘".bright_magenta());
+    println!();
+
+    match wallet::list_wallets() {
+        Ok(wallets) => {
+            if wallets.is_empty() {
+                println!("{}", "╔══════════════════════════════════════════╗".yellow());
+                println!("{}", "║         No Wallets Found                ║".yellow());
+                println!("{}", "╚══════════════════════════════════════════╝".yellow());
+                println!();
+                println!("{}", "💡 Run 'siertri-wallet new' to create your first wallet".yellow());
+            } else {
+                println!("{}", "╔══════════════════════════════════════════╗".magenta());
+                println!("{}", format!("║  Found {} wallet(s):                       ║", wallets.len()).magenta().bold());
+                println!("{}", "╠══════════════════════════════════════════╣".magenta());
+                for (i, wallet_file) in wallets.iter().enumerate() {
+                    println!("{}", format!("║  {}. {:<35} ║", i + 1, wallet_file).magenta());
+                }
+                println!("{}", "╚══════════════════════════════════════════╝".magenta());
+            }
+            println!();
+        },
+        Err(e) => {
+            println!("{}", format!("❌ Error: {}", e).red());
+            println!();
+        }
+    }
 }
 
 fn print_usage() {
-    println!("🔺 siertri-wallet - Manage your siertrichain wallet\n");
-    println!("Usage:");
-    println!("  siertri-wallet new        Create a new wallet");
-    println!("  siertri-wallet address    Show your wallet address");
-    println!("  siertri-wallet help       Show this help message");
+    print_banner();
+
+    println!("{}", "╔══════════════════════════════════════════════════════════╗".bright_yellow());
+    println!("{}", "║                      📖 Usage Guide                      ║".bright_yellow().bold());
+    println!("{}", "╠══════════════════════════════════════════════════════════╣".bright_yellow());
+    println!("{}", "║                                                          ║".bright_yellow());
+    println!("{}", "║  Commands:                                               ║".bright_yellow());
+    println!("{}", "║                                                          ║".bright_yellow());
+    println!("{}", "║    🔑 new       Create a new wallet                     ║".bright_yellow());
+    println!("{}", "║    📍 address   Show your wallet address                ║".bright_yellow());
+    println!("{}", "║    📋 list      List all available wallets              ║".bright_yellow());
+    println!("{}", "║    ❓ help      Show this help message                  ║".bright_yellow());
+    println!("{}", "║                                                          ║".bright_yellow());
+    println!("{}", "╠══════════════════════════════════════════════════════════╣".bright_yellow());
+    println!("{}", "║  Examples:                                               ║".bright_yellow());
+    println!("{}", "║                                                          ║".bright_yellow());
+    println!("{}", "║    $ siertri-wallet new                                  ║".white());
+    println!("{}", "║    $ siertri-wallet address                              ║".white());
+    println!("{}", "║    $ siertri-wallet list                                 ║".white());
+    println!("{}", "║                                                          ║".bright_yellow());
+    println!("{}", "╚══════════════════════════════════════════════════════════╝".bright_yellow());
+    println!();
 }
