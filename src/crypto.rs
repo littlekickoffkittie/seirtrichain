@@ -30,6 +30,13 @@ impl KeyPair {
         let public_key = PublicKey::from_secret_key(&secp, &secret_key);
         KeyPair { secret_key, public_key }
     }
+
+    pub fn from_secret_bytes(bytes: &[u8]) -> Result<Self, ChainError> {
+        let secret_key = SecretKey::from_slice(bytes)
+            .map_err(|e| ChainError::CryptoError(format!("Invalid secret key bytes: {}", e)))?;
+
+        Ok(Self::from_secret_key(secret_key))
+    }
     
     pub fn address(&self) -> String {
         let pubkey_bytes = self.public_key.serialize();

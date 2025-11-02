@@ -12,6 +12,7 @@ pub enum ChainError {
     InvalidTransaction(String),
     TriangleNotFound(String),
     CryptoError(String),
+    WalletError(String),
 }
 
 impl fmt::Display for ChainError {
@@ -25,6 +26,7 @@ impl fmt::Display for ChainError {
             ChainError::CryptoError(msg) => write!(f, "Cryptographic error: {}", msg),
             ChainError::DatabaseError(msg) => write!(f, "Database error: {}", msg),
             ChainError::NetworkError(msg) => write!(f, "Network error: {}", msg),
+            ChainError::WalletError(msg) => write!(f, "Wallet error: {}", msg),
         }
     }
 }
