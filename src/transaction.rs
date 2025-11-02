@@ -238,6 +238,7 @@ mod tests {
             Point { x: 0.0, y: 0.0 },
             Point { x: 1.0, y: 0.0 },
             Point { x: 0.5, y: 0.866 },
+            None,
         );
         let parent_hash = parent.hash();
         state.utxo_set.insert(parent_hash.clone(), parent.clone());
@@ -246,7 +247,7 @@ mod tests {
         let keypair = KeyPair::generate().unwrap();
         let address = keypair.address();
 
-        let mut tx = SubdivisionTx::new(parent_hash, children, address, 0, 1);
+        let mut tx = SubdivisionTx::new(parent_hash, children.to_vec(), address, 0, 1);
         let message = tx.signable_message();
         let signature = keypair.sign(&message).unwrap();
         let public_key = keypair.public_key.serialize().to_vec();
@@ -262,6 +263,7 @@ mod tests {
             Point { x: 0.0, y: 0.0 },
             Point { x: 1.0, y: 0.0 },
             Point { x: 0.5, y: 0.866 },
+            None,
         );
         let parent_hash = parent.hash();
         state.utxo_set.insert(parent_hash.clone(), parent.clone());
@@ -269,7 +271,7 @@ mod tests {
         let children = parent.subdivide();
         let address = "test_address".to_string();
 
-        let tx = SubdivisionTx::new(parent_hash, children, address, 0, 1);
+        let tx = SubdivisionTx::new(parent_hash, children.to_vec(), address, 0, 1);
         assert!(tx.validate(&state).is_err());
     }
 
@@ -280,6 +282,7 @@ mod tests {
             Point { x: 0.0, y: 0.0 },
             Point { x: 1.0, y: 0.0 },
             Point { x: 0.5, y: 0.866 },
+            None,
         );
         let parent_hash = parent.hash();
         state.utxo_set.insert(parent_hash.clone(), parent.clone());
@@ -288,7 +291,7 @@ mod tests {
         let keypair = KeyPair::generate().unwrap();
         let address = keypair.address();
 
-        let mut tx = SubdivisionTx::new(parent_hash, children, address, 0, 1);
+        let mut tx = SubdivisionTx::new(parent_hash, children.to_vec(), address, 0, 1);
         let fake_signature = vec![0u8; 64];
         let public_key = keypair.public_key.serialize().to_vec();
         tx.sign(fake_signature, public_key);
@@ -303,6 +306,7 @@ mod tests {
             Point { x: 0.0, y: 0.0 },
             Point { x: 1.0, y: 0.0 },
             Point { x: 0.5, y: 0.866 },
+            None,
         );
         let parent_hash = parent.hash();
         state.utxo_set.insert(parent_hash.clone(), parent);
@@ -311,6 +315,7 @@ mod tests {
             Point { x: 0.0, y: 0.0 },
             Point { x: 2.0, y: 0.0 },
             Point { x: 1.0, y: 1.732 },
+            None,
         );
         let children = vec![bad_child.clone(), bad_child.clone(), bad_child];
 
@@ -329,12 +334,13 @@ mod tests {
             Point { x: 0.0, y: 0.0 },
             Point { x: 1.0, y: 0.0 },
             Point { x: 0.5, y: 0.866 },
+            None,
         );
         let parent_hash = parent.hash();
         let children = parent.subdivide();
 
         let address = "test_address".to_string();
-        let tx = SubdivisionTx::new(parent_hash, children, address, 0, 1);
+        let tx = SubdivisionTx::new(parent_hash, children.to_vec(), address, 0, 1);
 
         assert!(tx.validate(&state).is_err());
     }

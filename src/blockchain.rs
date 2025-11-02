@@ -394,7 +394,7 @@ mod tests {
         let keypair = KeyPair::generate().unwrap();
         let address = keypair.address();
 
-        let mut tx = SubdivisionTx::new(genesis_hash, children, address.clone(), 0, 1);
+        let mut tx = SubdivisionTx::new(genesis_hash, children.to_vec(), address.clone(), 0, 1);
         let message = tx.signable_message();
         let signature = keypair.sign(&message).unwrap();
         let public_key = keypair.public_key.serialize().to_vec();
@@ -440,7 +440,7 @@ mod tests {
         let keypair = KeyPair::generate().unwrap();
         let address = keypair.address();
 
-        let mut tx = SubdivisionTx::new(genesis_hash, children, address.clone(), 0, 1);
+        let mut tx = SubdivisionTx::new(genesis_hash, children.to_vec(), address.clone(), 0, 1);
         let message = tx.signable_message();
         let signature = keypair.sign(&message).unwrap();
         let public_key = keypair.public_key.serialize().to_vec();
@@ -523,13 +523,13 @@ mod tests {
         let keypair = KeyPair::generate().unwrap();
         let address = keypair.address();
 
-        let mut tx1 = SubdivisionTx::new(genesis_hash.clone(), children.clone(), address.clone(), 0, 1);
+        let mut tx1 = SubdivisionTx::new(genesis_hash.clone(), children.to_vec(), address.clone(), 0, 1);
         let message1 = tx1.signable_message();
         let signature1 = keypair.sign(&message1).unwrap();
         let public_key1 = keypair.public_key.serialize().to_vec();
         tx1.sign(signature1, public_key1);
 
-        let mut tx2 = SubdivisionTx::new(genesis_hash, children, address.clone(), 0, 2);
+        let mut tx2 = SubdivisionTx::new(genesis_hash, children.to_vec(), address.clone(), 0, 2);
         let message2 = tx2.signable_message();
         let signature2 = keypair.sign(&message2).unwrap();
         let public_key2 = keypair.public_key.serialize().to_vec();
