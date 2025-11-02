@@ -175,6 +175,7 @@ impl Database {
             blocks,
             state: TriangleState { utxo_set },
             difficulty,
+            mempool: crate::blockchain::Mempool::new(),
         })
     }
 }
