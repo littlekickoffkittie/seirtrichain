@@ -172,13 +172,19 @@ pub struct Mempool {
 }
 
 impl Mempool {
+    /// Maximum number of transactions in mempool (to prevent DoS)
+    const MAX_TRANSACTIONS: usize = 10000;
+
+    /// Maximum transactions per address to prevent spam
+    const MAX_PER_ADDRESS: usize = 100;
+
     pub fn new() -> Self {
         Mempool {
             transactions: HashMap::new(),
         }
     }
 
-    /// Add a transaction to the mempool
+    /// Add a transaction to the mempool with validation
     pub fn add_transaction(&mut self, tx: Transaction) -> Result<(), ChainError> {
         let tx_hash = tx.hash();
 
@@ -189,7 +195,82 @@ impl Mempool {
             ));
         }
 
+        // Validate transaction before adding to mempool
+        match &tx {
+            Transaction::Transfer(transfer_tx) => {
+                // Validate signature before adding
+                transfer_tx.validate()?;
+            },
+            Transaction::Coinbase(_) => {
+                return Err(ChainError::InvalidTransaction(
+                    "Coinbase transactions cannot be added to mempool".to_string()
+                ));
+            },
+            Transaction::Subdivision(_) => {
+                // Subdivision validation requires state, so we skip it here
+                // It will be validated during mining or in validate_and_prune
+            }
+        }
+
+        // Check per-address limit to prevent spam
+        let sender_address = match &tx {
+            Transaction::Transfer(t) => Some(&t.sender),
+            Transaction::Subdivision(s) => Some(&s.owner_address),
+            Transaction::Coinbase(_) => None,
+        };
+
+        if let Some(sender) = sender_address {
+            let count = self.transactions.values()
+                .filter(|t| match t {
+                    Transaction::Transfer(t) => &t.sender == sender,
+                    Transaction::Subdivision(s) => &s.owner_address == sender,
+                    _ => false,
+                })
+                .count();
+
+            if count >= Self::MAX_PER_ADDRESS {
+                return Err(ChainError::InvalidTransaction(
+                    format!("Address has reached maximum mempool limit of {}", Self::MAX_PER_ADDRESS)
+                ));
+            }
+        }
+
+        // If mempool is full, evict lowest fee transaction
+        if self.transactions.len() >= Self::MAX_TRANSACTIONS {
+            self.evict_lowest_fee_transaction()?;
+        }
+
         self.transactions.insert(tx_hash, tx);
+        Ok(())
+    }
+
+    /// Evict the transaction with the lowest fee to make room for new ones
+    fn evict_lowest_fee_transaction(&mut self) -> Result<(), ChainError> {
+        if self.transactions.is_empty() {
+            return Ok(());
+        }
+
+        // Find transaction with lowest fee
+        let mut lowest_fee = u64::MAX;
+        let mut lowest_hash: Option<String> = None;
+
+        for (hash, tx) in &self.transactions {
+            let fee = match tx {
+                Transaction::Transfer(t) => t.fee,
+                Transaction::Subdivision(_) => 0, // Subdivisions don't have fees
+                Transaction::Coinbase(_) => 0,
+            };
+
+            if fee < lowest_fee {
+                lowest_fee = fee;
+                lowest_hash = Some(hash.clone());
+            }
+        }
+
+        if let Some(hash) = lowest_hash {
+            self.transactions.remove(&hash);
+        }
+
         Ok(())
     }
 
@@ -337,6 +418,27 @@ impl Blockchain {
             return Err(ChainError::InvalidMerkleRoot);
         }
 
+        // Validate coinbase transaction rules
+        let mut coinbase_count = 0;
+        for (i, tx) in block.transactions.iter().enumerate() {
+            if let Transaction::Coinbase(_) = tx {
+                coinbase_count += 1;
+                // Coinbase must be the first transaction
+                if i != 0 {
+                    return Err(ChainError::InvalidTransaction(
+                        "Coinbase transaction must be the first transaction in the block".to_string()
+                    ));
+                }
+            }
+        }
+
+        // Exactly one coinbase transaction per block (or zero for genesis)
+        if block.height > 0 && coinbase_count != 1 {
+            return Err(ChainError::InvalidTransaction(
+                format!("Block must contain exactly one coinbase transaction, found {}", coinbase_count)
+            ));
+        }
+
         for tx in block.transactions.iter() {
             match tx {
                 Transaction::Subdivision(tx) => {
@@ -347,7 +449,9 @@ impl Blockchain {
                     }
                     tx.validate(&self.state)?;
                 },
-                Transaction::Coinbase(_) => {},
+                Transaction::Coinbase(cb_tx) => {
+                    cb_tx.validate()?;
+                },
                 Transaction::Transfer(tx) => {
                     if !self.state.utxo_set.contains_key(&tx.input_hash) {
                         return Err(ChainError::InvalidTransaction(
@@ -380,7 +484,9 @@ impl Blockchain {
                 },
                 Transaction::Transfer(tx) => {
                     let triangle = self.state.utxo_set.remove(&tx.input_hash)
-                        .expect("Transfer input missing");
+                        .ok_or_else(|| ChainError::TriangleNotFound(
+                            format!("Transfer input {} missing from UTXO set", tx.input_hash)
+                        ))?;
                     let new_hash = format!("{:x}", Sha256::digest(
                         format!("{}:{}", tx.input_hash, tx.new_owner).as_bytes()
                     ));
@@ -411,10 +517,19 @@ impl Blockchain {
         let last_block = self.blocks.last().unwrap();
 
         let time_taken = last_block.timestamp - first_block.timestamp;
+
+        // Guard against zero or negative time (e.g., in testing scenarios)
+        if time_taken <= 0 {
+            return;
+        }
+
         let expected_time = TARGET_BLOCK_TIME_SECONDS * DIFFICULTY_ADJUSTMENT_WINDOW as i64;
 
+        // Add max difficulty cap to prevent runaway difficulty
+        const MAX_DIFFICULTY: u64 = 256;
+
         if time_taken < expected_time / 2 {
-            self.difficulty += 1;
+            self.difficulty = (self.difficulty + 1).min(MAX_DIFFICULTY);
         } else if time_taken > expected_time * 2 && self.difficulty > 1 {
             self.difficulty -= 1;
         }

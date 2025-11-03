@@ -72,18 +72,25 @@ impl Database {
     }
 
     pub fn save_utxo_set(&self, state: &TriangleState) -> Result<(), ChainError> {
-        self.conn.execute("DELETE FROM utxo_set", [])
+        // Use a transaction for atomic UTXO set update
+        let tx = self.conn.unchecked_transaction()
+            .map_err(|e| ChainError::DatabaseError(format!("Failed to start transaction: {}", e)))?;
+
+        tx.execute("DELETE FROM utxo_set", [])
             .map_err(|e| ChainError::DatabaseError(format!("Failed to clear utxo_set: {}", e)))?;
 
         for (hash, triangle) in &state.utxo_set {
             let triangle_json = serde_json::to_string(triangle)
                 .map_err(|e| ChainError::DatabaseError(format!("Failed to serialize triangle: {}", e)))?;
 
-            self.conn.execute(
+            tx.execute(
                 "INSERT INTO utxo_set (hash, triangle_data) VALUES (?1, ?2)",
                 params![hash, triangle_json],
             ).map_err(|e| ChainError::DatabaseError(format!("Failed to save UTXO: {}", e)))?;
         }
+
+        tx.commit()
+            .map_err(|e| ChainError::DatabaseError(format!("Failed to commit transaction: {}", e)))?;
 
         Ok(())
     }
@@ -97,6 +104,58 @@ impl Database {
         Ok(())
     }
 
+    /// Atomically saves a block and the associated blockchain state
+    /// This ensures database consistency by wrapping all operations in a transaction
+    pub fn save_blockchain_state(&self, block: &Block, state: &TriangleState, difficulty: u64) -> Result<(), ChainError> {
+        let tx = self.conn.unchecked_transaction()
+            .map_err(|e| ChainError::DatabaseError(format!("Failed to start transaction: {}", e)))?;
+
+        // Save block
+        let transactions_json = serde_json::to_string(&block.transactions)
+            .map_err(|e| ChainError::DatabaseError(format!("Failed to serialize transactions: {}", e)))?;
+
+        tx.execute(
+            "INSERT OR REPLACE INTO blocks (height, hash, previous_hash, timestamp, difficulty, nonce, merkle_root, transactions)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                block.height as i64,
+                block.hash,
+                block.previous_hash,
+                block.timestamp,
+                block.difficulty as i64,
+                block.nonce as i64,
+                block.merkle_root,
+                transactions_json,
+            ],
+        ).map_err(|e| ChainError::DatabaseError(format!("Failed to save block: {}", e)))?;
+
+        // Save UTXO set
+        tx.execute("DELETE FROM utxo_set", [])
+            .map_err(|e| ChainError::DatabaseError(format!("Failed to clear utxo_set: {}", e)))?;
+
+        for (hash, triangle) in &state.utxo_set {
+            let triangle_json = serde_json::to_string(triangle)
+                .map_err(|e| ChainError::DatabaseError(format!("Failed to serialize triangle: {}", e)))?;
+
+            tx.execute(
+                "INSERT INTO utxo_set (hash, triangle_data) VALUES (?1, ?2)",
+                params![hash, triangle_json],
+            ).map_err(|e| ChainError::DatabaseError(format!("Failed to save UTXO: {}", e)))?;
+        }
+
+        // Save difficulty
+        tx.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('difficulty', ?1)",
+            params![difficulty.to_string()],
+        ).map_err(|e| ChainError::DatabaseError(format!("Failed to save difficulty: {}", e)))?;
+
+        // Commit all changes atomically
+        tx.commit()
+            .map_err(|e| ChainError::DatabaseError(format!("Failed to commit transaction: {}", e)))?;
+
+        Ok(())
+    }
+
     pub fn load_blockchain(&self) -> Result<Blockchain, ChainError> {
         let mut stmt = self.conn.prepare(
             "SELECT height, hash, previous_hash, timestamp, difficulty, nonce, merkle_root, transactions
@@ -106,7 +165,7 @@ impl Database {
         let blocks_iter = stmt.query_map([], |row| {
             let transactions_json: String = row.get(7)?;
             let transactions: Vec<Transaction> = serde_json::from_str(&transactions_json)
-                .map_err(|e| rusqlite::Error::InvalidQuery)?;
+                .map_err(|_e| rusqlite::Error::InvalidQuery)?;
 
             let height: i64 = row.get(0)?;
             let timestamp: i64 = row.get(3)?;

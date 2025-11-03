@@ -163,7 +163,31 @@ pub struct CoinbaseTx {
 }
 
 impl CoinbaseTx {
+    /// Maximum reward area that can be claimed in a coinbase transaction
+    pub const MAX_REWARD_AREA: u64 = 1000;
+
     pub fn validate(&self) -> Result<(), ChainError> {
+        // Validate reward area is within acceptable bounds
+        if self.reward_area == 0 {
+            return Err(ChainError::InvalidTransaction(
+                "Coinbase reward area must be greater than zero".to_string()
+            ));
+        }
+
+        if self.reward_area > Self::MAX_REWARD_AREA {
+            return Err(ChainError::InvalidTransaction(
+                format!("Coinbase reward area {} exceeds maximum {}",
+                    self.reward_area, Self::MAX_REWARD_AREA)
+            ));
+        }
+
+        // Validate beneficiary address is not empty
+        if self.beneficiary_address.is_empty() {
+            return Err(ChainError::InvalidTransaction(
+                "Coinbase beneficiary address cannot be empty".to_string()
+            ));
+        }
+
         Ok(())
     }
 }
@@ -178,9 +202,14 @@ pub struct TransferTx {
     pub nonce: u64,
     pub signature: Option<Vec<u8>>,
     pub public_key: Option<Vec<u8>>,
+    #[serde(default)]
+    pub memo: Option<String>,
 }
 
 impl TransferTx {
+    /// Maximum memo length (256 characters)
+    pub const MAX_MEMO_LENGTH: usize = 256;
+
     pub fn new(input_hash: String, new_owner: Address, sender: Address, fee: u64, nonce: u64) -> Self {
         TransferTx {
             input_hash,
@@ -190,7 +219,18 @@ impl TransferTx {
             nonce,
             signature: None,
             public_key: None,
+            memo: None,
         }
+    }
+
+    pub fn with_memo(mut self, memo: String) -> Result<Self, ChainError> {
+        if memo.len() > Self::MAX_MEMO_LENGTH {
+            return Err(ChainError::InvalidTransaction(
+                format!("Memo exceeds maximum length of {} characters", Self::MAX_MEMO_LENGTH)
+            ));
+        }
+        self.memo = Some(memo);
+        Ok(self)
     }
     
     pub fn signable_message(&self) -> Vec<u8> {

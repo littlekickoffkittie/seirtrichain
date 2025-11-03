@@ -21,9 +21,20 @@ pub struct Point {
 }
 
 impl Point {
+    /// Maximum allowed coordinate value to prevent overflow/precision issues
+    pub const MAX_COORDINATE: Coord = 1e10;
+
     /// Creates a new Point.
     pub fn new(x: Coord, y: Coord) -> Self {
         Point { x, y }
+    }
+
+    /// Validates that the point has finite coordinates within reasonable bounds
+    pub fn is_valid(&self) -> bool {
+        self.x.is_finite() &&
+        self.y.is_finite() &&
+        self.x.abs() < Self::MAX_COORDINATE &&
+        self.y.abs() < Self::MAX_COORDINATE
     }
 
     /// Calculates the midpoint between this point and another.
@@ -131,8 +142,15 @@ impl Triangle {
     // ------------------------------------------------------------------------
 
     /// Checks if the triangle is geometrically valid.
-    /// This currently checks for non-degenerate triangles (Area > Tolerance).
+    /// This checks:
+    /// 1. All points have valid, finite coordinates within bounds
+    /// 2. The triangle is non-degenerate (Area > Tolerance)
     pub fn is_valid(&self) -> bool {
+        // Check all points are valid
+        if !self.a.is_valid() || !self.b.is_valid() || !self.c.is_valid() {
+            return false;
+        }
+
         // A valid triangle must have a non-zero area (i.e., not collinear points).
         self.area() > GEOMETRIC_TOLERANCE
     }

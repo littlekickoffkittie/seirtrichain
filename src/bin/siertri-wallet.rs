@@ -1,6 +1,6 @@
 //! Wallet CLI for siertrichain - Beautiful edition!
 
-use siertrichain::wallet::{self, Wallet};
+use siertrichain::wallet::{self};
 use colored::*;
 
 const LOGO: &str = r#"
@@ -55,8 +55,11 @@ fn create_wallet() {
             println!("{}", "╔══════════════════════════════════════════════════════════╗".green());
             println!("{}", "║            ✨ Wallet Created Successfully! ✨            ║".green().bold());
             println!("{}", "╠══════════════════════════════════════════════════════════╣".green());
-            println!("{}", format!("║  📍 Address: {:<42} ║", &wallet.address[..42]).green());
-            println!("{}", format!("║             {:<42} ║", &wallet.address[42..]).green());
+            let addr_len = wallet.address.len();
+            let addr_part1 = if addr_len >= 42 { &wallet.address[..42] } else { &wallet.address };
+            let addr_part2 = if addr_len > 42 { &wallet.address[42..] } else { "" };
+            println!("{}", format!("║  📍 Address: {:<42} ║", addr_part1).green());
+            println!("{}", format!("║             {:<42} ║", addr_part2).green());
             println!("{}", format!("║  📁 Location: {:<39} ║", wallet::get_default_wallet_path().display()).green());
             println!("{}", format!("║  📅 Created: {:<40} ║", wallet.created).green());
             println!("{}", "╚══════════════════════════════════════════════════════════╝".green());
@@ -91,8 +94,11 @@ fn show_address() {
             println!("{}", "╔══════════════════════════════════════════════════════════╗".cyan());
             println!("{}", "║                   Your Wallet Details                    ║".cyan().bold());
             println!("{}", "╠══════════════════════════════════════════════════════════╣".cyan());
-            println!("{}", format!("║  📍 Address: {:<42} ║", &wallet.address[..42]).cyan());
-            println!("{}", format!("║             {:<42} ║", &wallet.address[42..]).cyan());
+            let addr_len = wallet.address.len();
+            let addr_part1 = if addr_len >= 42 { &wallet.address[..42] } else { &wallet.address };
+            let addr_part2 = if addr_len > 42 { &wallet.address[42..] } else { "" };
+            println!("{}", format!("║  📍 Address: {:<42} ║", addr_part1).cyan());
+            println!("{}", format!("║             {:<42} ║", addr_part2).cyan());
             println!("{}", format!("║  📅 Created: {:<40} ║", wallet.created).cyan());
             println!("{}", "╚══════════════════════════════════════════════════════════╝".cyan());
             println!();

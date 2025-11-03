@@ -7,3 +7,4 @@ pub mod crypto;
 pub mod persistence;
 pub mod network;
 pub mod wallet;
+pub mod addressbook;

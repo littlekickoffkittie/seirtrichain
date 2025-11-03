@@ -13,6 +13,7 @@ pub enum ChainError {
     TriangleNotFound(String),
     CryptoError(String),
     WalletError(String),
+    ApiError(String),
 }
 
 impl fmt::Display for ChainError {
@@ -27,6 +28,7 @@ impl fmt::Display for ChainError {
             ChainError::DatabaseError(msg) => write!(f, "Database error: {}", msg),
             ChainError::NetworkError(msg) => write!(f, "Network error: {}", msg),
             ChainError::WalletError(msg) => write!(f, "Wallet error: {}", msg),
+            ChainError::ApiError(msg) => write!(f, "API error: {}", msg),
         }
     }
 }

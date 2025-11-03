@@ -185,6 +185,159 @@ pub fn list_wallets() -> Result<Vec<String>, ChainError> {
     Ok(wallets)
 }
 
+// ============================================================================
+// Wallet Encryption/Decryption
+// ============================================================================
+
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Nonce,
+};
+use argon2::{Argon2, PasswordHasher};
+use argon2::password_hash::{SaltString, PasswordHash};
+
+/// Encrypted wallet structure
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EncryptedWallet {
+    pub name: Option<String>,
+    pub address: String,
+    pub encrypted_secret_key: String,  // Base64 encoded encrypted data
+    pub salt: String,  // Base64 encoded salt
+    pub nonce: String, // Base64 encoded nonce
+    pub created: String,
+}
+
+impl EncryptedWallet {
+    /// Encrypt a wallet with a password
+    pub fn from_wallet(wallet: &Wallet, password: &str) -> Result<Self, ChainError> {
+        use argon2::PasswordHasher;
+        use argon2::password_hash::SaltString;
+
+        // Generate a random salt
+        let salt = SaltString::generate(&mut OsRng);
+
+        // Derive encryption key from password using Argon2
+        let argon2 = Argon2::default();
+        let password_hash = argon2
+            .hash_password(password.as_bytes(), &salt)
+            .map_err(|e| ChainError::CryptoError(format!("Password hashing failed: {}", e)))?;
+
+        // Extract the hash bytes for encryption key
+        let hash_bytes = password_hash.hash
+            .ok_or_else(|| ChainError::CryptoError("No hash generated".to_string()))?;
+        let key_bytes = hash_bytes.as_bytes();
+
+        // Create cipher
+        let cipher = Aes256Gcm::new_from_slice(&key_bytes[..32])
+            .map_err(|e| ChainError::CryptoError(format!("Failed to create cipher: {}", e)))?;
+
+        // Generate a random nonce
+        use rand::RngCore;
+        let mut nonce_bytes = [0u8; 12];
+        rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        // Encrypt the secret key
+        let secret_bytes = wallet.secret_key_hex.as_bytes();
+        let ciphertext = cipher
+            .encrypt(nonce, secret_bytes)
+            .map_err(|e| ChainError::CryptoError(format!("Encryption failed: {}", e)))?;
+
+        use base64::{Engine as _, engine::general_purpose};
+
+        Ok(EncryptedWallet {
+            name: wallet.name.clone(),
+            address: wallet.address.clone(),
+            encrypted_secret_key: general_purpose::STANDARD.encode(&ciphertext),
+            salt: salt.to_string(),
+            nonce: general_purpose::STANDARD.encode(&nonce_bytes),
+            created: wallet.created.clone(),
+        })
+    }
+
+    /// Decrypt the wallet using a password
+    pub fn decrypt(&self, password: &str) -> Result<Wallet, ChainError> {
+        use argon2::PasswordVerifier;
+
+        // Parse the stored salt
+        let salt = SaltString::from_b64(&self.salt)
+            .map_err(|e| ChainError::CryptoError(format!("Invalid salt: {}", e)))?;
+
+        // Derive the same key from password
+        let argon2 = Argon2::default();
+        let password_hash = argon2
+            .hash_password(password.as_bytes(), &salt)
+            .map_err(|e| ChainError::CryptoError(format!("Password hashing failed: {}", e)))?;
+
+        let hash_bytes = password_hash.hash
+            .ok_or_else(|| ChainError::CryptoError("No hash generated".to_string()))?;
+        let key_bytes = hash_bytes.as_bytes();
+
+        // Create cipher
+        let cipher = Aes256Gcm::new_from_slice(&key_bytes[..32])
+            .map_err(|e| ChainError::CryptoError(format!("Failed to create cipher: {}", e)))?;
+
+        // Decode nonce and ciphertext
+        use base64::{Engine as _, engine::general_purpose};
+
+        let nonce_bytes = general_purpose::STANDARD.decode(&self.nonce)
+            .map_err(|e| ChainError::CryptoError(format!("Invalid nonce: {}", e)))?;
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        let ciphertext = general_purpose::STANDARD.decode(&self.encrypted_secret_key)
+            .map_err(|e| ChainError::CryptoError(format!("Invalid ciphertext: {}", e)))?;
+
+        // Decrypt
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext.as_ref())
+            .map_err(|_| ChainError::CryptoError("Decryption failed - wrong password?".to_string()))?;
+
+        let secret_key_hex = String::from_utf8(plaintext)
+            .map_err(|e| ChainError::CryptoError(format!("Invalid UTF-8: {}", e)))?;
+
+        Ok(Wallet {
+            name: self.name.clone(),
+            address: self.address.clone(),
+            secret_key_hex,
+            created: self.created.clone(),
+        })
+    }
+
+    /// Save encrypted wallet to file
+    pub fn save(&self, path: &PathBuf) -> Result<(), ChainError> {
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| ChainError::WalletError(format!("Failed to serialize wallet: {}", e)))?;
+
+        fs::write(path, json)
+            .map_err(|e| ChainError::WalletError(format!("Failed to write wallet: {}", e)))?;
+
+        // Set file permissions to owner-only (Unix only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(path)
+                .map_err(|e| ChainError::WalletError(format!("Failed to get file metadata: {}", e)))?
+                .permissions();
+            perms.set_mode(0o600); // rw-------
+            fs::set_permissions(path, perms)
+                .map_err(|e| ChainError::WalletError(format!("Failed to set file permissions: {}", e)))?;
+        }
+
+        Ok(())
+    }
+
+    /// Load encrypted wallet from file
+    pub fn load(path: &PathBuf) -> Result<Self, ChainError> {
+        let contents = fs::read_to_string(path)
+            .map_err(|e| ChainError::WalletError(format!("Failed to read wallet: {}", e)))?;
+
+        let wallet: EncryptedWallet = serde_json::from_str(&contents)
+            .map_err(|e| ChainError::WalletError(format!("Failed to parse encrypted wallet: {}", e)))?;
+
+        Ok(wallet)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

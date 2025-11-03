@@ -97,19 +97,34 @@ impl NetworkNode {
         match response {
             NetworkMessage::Blockchain(remote_chain) => {
                 let mut chain = self.blockchain.write().await;
-                
+
                 if remote_chain.blocks.len() > chain.blocks.len() {
-                    println!("📥 Syncing blockchain (height: {} -> {})", 
-                        chain.blocks.len() - 1, 
+                    println!("📥 Syncing blockchain (height: {} -> {})",
+                        chain.blocks.len() - 1,
                         remote_chain.blocks.len() - 1
                     );
-                    
+
+                    // Validate the remote chain before accepting it
+                    if !Self::validate_chain(&remote_chain) {
+                        return Err(ChainError::NetworkError(
+                            "Invalid remote blockchain: failed validation".to_string()
+                        ));
+                    }
+
+                    // Verify genesis block matches
+                    if remote_chain.blocks.first().map(|b| &b.hash) !=
+                       chain.blocks.first().map(|b| &b.hash) {
+                        return Err(ChainError::NetworkError(
+                            "Genesis block mismatch".to_string()
+                        ));
+                    }
+
                     *chain = remote_chain.clone();
-                    
+
                     // Save to database
                     let db = Database::open(&self.db_path)
                         .map_err(|e| ChainError::NetworkError(format!("DB open failed: {}", e)))?;
-                    
+
                     for block in &chain.blocks {
                         db.save_block(block)
                             .map_err(|e| ChainError::NetworkError(format!("DB save failed: {}", e)))?;
@@ -118,7 +133,7 @@ impl NetworkNode {
                         .map_err(|e| ChainError::NetworkError(format!("DB save failed: {}", e)))?;
                     db.save_difficulty(chain.difficulty)
                         .map_err(|e| ChainError::NetworkError(format!("DB save failed: {}", e)))?;
-                    
+
                     println!("✅ Blockchain synced!");
                 } else {
                     println!("✅ Already up to date");
@@ -141,6 +156,45 @@ impl NetworkNode {
     pub async fn get_height(&self) -> u64 {
         let chain = self.blockchain.read().await;
         chain.blocks.last().map(|b| b.height).unwrap_or(0)
+    }
+
+    /// Validates an entire blockchain by checking all blocks
+    fn validate_chain(chain: &Blockchain) -> bool {
+        if chain.blocks.is_empty() {
+            return false;
+        }
+
+        // Validate each block's proof of work and merkle root
+        for block in &chain.blocks {
+            if !block.verify_proof_of_work() {
+                println!("❌ Block {} has invalid proof of work", block.height);
+                return false;
+            }
+
+            let calculated_merkle = crate::blockchain::Block::calculate_merkle_root(&block.transactions);
+            if block.merkle_root != calculated_merkle {
+                println!("❌ Block {} has invalid merkle root", block.height);
+                return false;
+            }
+        }
+
+        // Validate block linkage
+        for i in 1..chain.blocks.len() {
+            let prev = &chain.blocks[i - 1];
+            let curr = &chain.blocks[i];
+
+            if curr.height != prev.height + 1 {
+                println!("❌ Invalid block height at block {}", curr.height);
+                return false;
+            }
+
+            if curr.previous_hash != prev.hash {
+                println!("❌ Invalid block linkage at block {}", curr.height);
+                return false;
+            }
+        }
+
+        true
     }
 }
 
