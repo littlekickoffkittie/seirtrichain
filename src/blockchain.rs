@@ -17,6 +17,7 @@ pub fn genesis_triangle() -> Triangle {
         Point { x: 1.0, y: 0.0 },
         Point { x: 0.5, y: 0.866025403784 },
         None,
+        "genesis_owner".to_string(),
     )
 }
 
@@ -352,6 +353,7 @@ impl Mempool {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Blockchain {
     pub blocks: Vec<Block>,
+    pub block_index: HashMap<Sha256Hash, Block>,
     pub state: TriangleState,
     pub difficulty: u64,
     pub mempool: Mempool,
@@ -386,8 +388,12 @@ impl Blockchain {
             transactions: vec![],
         };
 
+        let mut block_index = HashMap::new();
+        block_index.insert(genesis_block.hash.clone(), genesis_block.clone());
+
         Blockchain {
             blocks: vec![genesis_block],
+            block_index,
             state,
             difficulty: 2,
             mempool: Mempool::new(),
@@ -483,10 +489,11 @@ impl Blockchain {
                     self.state.apply_coinbase(cb_tx);
                 },
                 Transaction::Transfer(tx) => {
-                    let triangle = self.state.utxo_set.remove(&tx.input_hash)
+                    let mut triangle = self.state.utxo_set.remove(&tx.input_hash)
                         .ok_or_else(|| ChainError::TriangleNotFound(
                             format!("Transfer input {} missing from UTXO set", tx.input_hash)
                         ))?;
+                    triangle.owner = tx.new_owner.clone();
                     let new_hash = format!("{:x}", Sha256::digest(
                         format!("{}:{}", tx.input_hash, tx.new_owner).as_bytes()
                     ));
@@ -495,7 +502,8 @@ impl Blockchain {
             }
         }
 
-        self.blocks.push(valid_block);
+        self.blocks.push(valid_block.clone());
+        self.block_index.insert(valid_block.hash.clone(), valid_block);
         self.adjust_difficulty();
 
         // Remove confirmed transactions from mempool
@@ -892,16 +900,19 @@ mod tests {
     #[test]
     fn test_mempool_add_transaction() {
         let mut mempool = Mempool::new();
-        let state = TriangleState::new();
-
-        assert!(mempool.is_empty());
-        assert_eq!(mempool.len(), 0);
-
-        let coinbase = CoinbaseTx {
-            reward_area: 1000,
-            beneficiary_address: "test_address".to_string(),
-        };
-        let tx = Transaction::Coinbase(coinbase);
+        let mut state = TriangleState::new();
+        let genesis = genesis_triangle();
+        let genesis_hash = genesis.hash();
+        state.utxo_set.insert(genesis_hash.clone(), genesis.clone());
+        let children = genesis.subdivide();
+        let keypair = KeyPair::generate().unwrap();
+        let address = keypair.address();
+        let mut valid_tx = SubdivisionTx::new(genesis_hash.clone(), children.to_vec(), address, 0, 1);
+        let message = valid_tx.signable_message();
+        let signature = keypair.sign(&message).unwrap();
+        let public_key = keypair.public_key.serialize().to_vec();
+        valid_tx.sign(signature, public_key);
+        let tx = Transaction::Subdivision(valid_tx);
 
         mempool.add_transaction(tx.clone()).unwrap();
         assert_eq!(mempool.len(), 1);
@@ -911,12 +922,19 @@ mod tests {
     #[test]
     fn test_mempool_remove_transaction() {
         let mut mempool = Mempool::new();
-
-        let coinbase = CoinbaseTx {
-            reward_area: 1000,
-            beneficiary_address: "test_address".to_string(),
-        };
-        let tx = Transaction::Coinbase(coinbase);
+        let mut state = TriangleState::new();
+        let genesis = genesis_triangle();
+        let genesis_hash = genesis.hash();
+        state.utxo_set.insert(genesis_hash.clone(), genesis.clone());
+        let children = genesis.subdivide();
+        let keypair = KeyPair::generate().unwrap();
+        let address = keypair.address();
+        let mut valid_tx = SubdivisionTx::new(genesis_hash.clone(), children.to_vec(), address, 0, 1);
+        let message = valid_tx.signable_message();
+        let signature = keypair.sign(&message).unwrap();
+        let public_key = keypair.public_key.serialize().to_vec();
+        valid_tx.sign(signature, public_key);
+        let tx = Transaction::Subdivision(valid_tx);
         let tx_hash = tx.hash();
 
         mempool.add_transaction(tx.clone()).unwrap();
@@ -930,12 +948,19 @@ mod tests {
     #[test]
     fn test_mempool_duplicate_transaction() {
         let mut mempool = Mempool::new();
-
-        let coinbase = CoinbaseTx {
-            reward_area: 1000,
-            beneficiary_address: "test_address".to_string(),
-        };
-        let tx = Transaction::Coinbase(coinbase);
+        let mut state = TriangleState::new();
+        let genesis = genesis_triangle();
+        let genesis_hash = genesis.hash();
+        state.utxo_set.insert(genesis_hash.clone(), genesis.clone());
+        let children = genesis.subdivide();
+        let keypair = KeyPair::generate().unwrap();
+        let address = keypair.address();
+        let mut valid_tx = SubdivisionTx::new(genesis_hash.clone(), children.to_vec(), address, 0, 1);
+        let message = valid_tx.signable_message();
+        let signature = keypair.sign(&message).unwrap();
+        let public_key = keypair.public_key.serialize().to_vec();
+        valid_tx.sign(signature, public_key);
+        let tx = Transaction::Subdivision(valid_tx);
 
         mempool.add_transaction(tx.clone()).unwrap();
         let result = mempool.add_transaction(tx.clone());
@@ -986,21 +1011,31 @@ mod tests {
         assert!(chain.mempool.is_empty());
 
         // Add a transaction to mempool
-        let coinbase = CoinbaseTx {
-            reward_area: 1000,
-            beneficiary_address: "test_address".to_string(),
-        };
-        let tx = Transaction::Coinbase(coinbase);
+        let genesis = genesis_triangle();
+        let genesis_hash = genesis.hash();
+        let children = genesis.subdivide();
+        let keypair = KeyPair::generate().unwrap();
+        let address = keypair.address();
+        let mut valid_tx = SubdivisionTx::new(genesis_hash.clone(), children.to_vec(), address, 0, 1);
+        let message = valid_tx.signable_message();
+        let signature = keypair.sign(&message).unwrap();
+        let public_key = keypair.public_key.serialize().to_vec();
+        valid_tx.sign(signature, public_key);
+        let tx = Transaction::Subdivision(valid_tx);
         chain.mempool.add_transaction(tx.clone()).unwrap();
         assert_eq!(chain.mempool.len(), 1);
 
         // Create and apply a block with that transaction
         let last_block = chain.blocks.last().unwrap();
+        let coinbase = CoinbaseTx {
+            reward_area: 1000,
+            beneficiary_address: "miner_address".to_string(),
+        };
         let new_block = Block::new(
             last_block.height + 1,
             last_block.hash.clone(),
             chain.difficulty,
-            vec![tx],
+            vec![Transaction::Coinbase(coinbase), tx],
         );
 
         // Before applying, mempool has 1 transaction
