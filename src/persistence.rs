@@ -230,8 +230,11 @@ impl Database {
             }
         ).unwrap_or(2);
 
+        let block_index = blocks.iter().map(|b| (b.hash.clone(), b.clone())).collect();
+
         Ok(Blockchain {
             blocks,
+            block_index,
             state: TriangleState { utxo_set },
             difficulty,
             mempool: crate::blockchain::Mempool::new(),

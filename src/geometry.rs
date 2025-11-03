@@ -64,13 +64,14 @@ pub struct Triangle {
     pub a: Point,
     pub b: Point,
     pub c: Point,
-    pub parent_hash: Option<String>, 
+    pub parent_hash: Option<String>,
+    pub owner: String,
 }
 
 impl Triangle {
     /// Creates a new Triangle from three vertices.
-    pub fn new(a: Point, b: Point, c: Point, parent_hash: Option<String>) -> Self {
-        Triangle { a, b, c, parent_hash }
+    pub fn new(a: Point, b: Point, c: Point, parent_hash: Option<String>, owner: String) -> Self {
+        Triangle { a, b, c, parent_hash, owner }
     }
 
     /// Calculates the center point (centroid) of the triangle.
@@ -109,7 +110,8 @@ impl Triangle {
             Point::new(0.0, 0.0),
             Point::new(SQRT3, 0.0),
             Point::new(HALF_SQRT3, ONE_POINT_FIVE),
-            None, 
+            None,
+            "genesis_owner".to_string(),
         )
     }
     
@@ -126,13 +128,13 @@ impl Triangle {
         let parent_hash = Some(self.hash());
 
         // Child 1 (A-mid_ab-mid_ca)
-        let t1 = Triangle::new(self.a, mid_ab, mid_ca, parent_hash.clone());
+        let t1 = Triangle::new(self.a, mid_ab, mid_ca, parent_hash.clone(), self.owner.clone());
 
         // Child 2 (mid_ab-B-mid_bc)
-        let t2 = Triangle::new(mid_ab, self.b, mid_bc, parent_hash.clone());
+        let t2 = Triangle::new(mid_ab, self.b, mid_bc, parent_hash.clone(), self.owner.clone());
 
         // Child 3 (mid_ca-mid_bc-C)
-        let t3 = Triangle::new(mid_ca, mid_bc, self.c, parent_hash);
+        let t3 = Triangle::new(mid_ca, mid_bc, self.c, parent_hash, self.owner.clone());
         
         [t1, t2, t3]
     }
@@ -171,6 +173,7 @@ mod tests {
             Point::new(10.0, 0.0),
             Point::new(0.0, 10.0),
             None,
+            "test_owner".to_string(),
         )
     }
 
@@ -194,8 +197,8 @@ mod tests {
         let p2 = Point::new(3.0, 4.0);
         let p3 = Point::new(5.0, 6.0);
 
-        let t1 = Triangle::new(p1, p2, p3, None); 
-        let t2 = Triangle::new(p3, p1, p2, None); 
+        let t1 = Triangle::new(p1, p2, p3, None, "owner1".to_string());
+        let t2 = Triangle::new(p3, p1, p2, None, "owner1".to_string());
 
         assert_eq!(t1.hash(), t2.hash());
     }
@@ -233,7 +236,8 @@ mod tests {
             Point::new(1.0, 1.0),
             Point::new(2.0, 2.0),
             Point::new(3.0, 3.0),
-            None
+            None,
+            "owner".to_string()
         );
         assert!(!t_degenerate.is_valid(), "A degenerate (collinear) triangle should be invalid.");
     }

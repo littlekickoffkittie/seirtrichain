@@ -279,6 +279,7 @@ mod tests {
             Point { x: 1.0, y: 0.0 },
             Point { x: 0.5, y: 0.866 },
             None,
+            "test_owner".to_string(),
         );
         let parent_hash = parent.hash();
         state.utxo_set.insert(parent_hash.clone(), parent.clone());
@@ -304,6 +305,7 @@ mod tests {
             Point { x: 1.0, y: 0.0 },
             Point { x: 0.5, y: 0.866 },
             None,
+            "test_owner".to_string(),
         );
         let parent_hash = parent.hash();
         state.utxo_set.insert(parent_hash.clone(), parent.clone());
@@ -323,6 +325,7 @@ mod tests {
             Point { x: 1.0, y: 0.0 },
             Point { x: 0.5, y: 0.866 },
             None,
+            "test_owner".to_string(),
         );
         let parent_hash = parent.hash();
         state.utxo_set.insert(parent_hash.clone(), parent.clone());
@@ -347,6 +350,7 @@ mod tests {
             Point { x: 1.0, y: 0.0 },
             Point { x: 0.5, y: 0.866 },
             None,
+            "test_owner".to_string(),
         );
         let parent_hash = parent.hash();
         state.utxo_set.insert(parent_hash.clone(), parent);
@@ -356,6 +360,7 @@ mod tests {
             Point { x: 2.0, y: 0.0 },
             Point { x: 1.0, y: 1.732 },
             None,
+            "test_owner".to_string(),
         );
         let children = vec![bad_child.clone(), bad_child.clone(), bad_child];
 
@@ -375,6 +380,7 @@ mod tests {
             Point { x: 1.0, y: 0.0 },
             Point { x: 0.5, y: 0.866 },
             None,
+            "test_owner".to_string(),
         );
         let parent_hash = parent.hash();
         let children = parent.subdivide();

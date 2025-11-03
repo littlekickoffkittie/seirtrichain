@@ -130,10 +130,27 @@ cargo run --bin siertri-send \
   abc123def456triangle_hash_here
 ```
 
+## REST API
+
+The blockchain can be queried through a REST API.
+
+**Start the API Server:**
+```bash
+cargo run --bin siertri-api
+```
+
+**Endpoints:**
+- `GET /blockchain/height`: Get the current height of the blockchain.
+- `GET /blockchain/block/:hash`: Get a block by its hash.
+- `GET /address/:addr/balance`: Get the balance for a given address.
+- `POST /transaction`: Submit a new transaction.
+- `GET /transaction/:hash`: Get the status of a transaction.
+
 ## CLI Tools
 
 | Tool | Purpose |
 |------|---------|
+| `siertri-api` | Runs the REST API server |
 | `siertri-wallet-new` | Create a new wallet |
 | `siertri-wallet` | Manage existing wallet |
 | `siertri-balance` | Check triangle holdings |

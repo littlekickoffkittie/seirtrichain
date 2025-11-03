@@ -164,7 +164,7 @@ Siertrichain is a revolutionary blockchain implementation that replaces traditio
 **Goal**: Production-ready core features with security hardening
 
 #### Milestone 1.1: API & Integration (Weeks 1-4)
-- [ ] **REST API Server** (`siertri-api`)
+- [x] **REST API Server** (`siertri-api`)
   - GET `/blockchain/height` - Current chain height
   - GET `/blockchain/block/:hash` - Fetch block by hash
   - GET `/address/:addr/balance` - Query address balance
