@@ -52,6 +52,13 @@ impl Point {
         hasher.update(data.as_bytes());
         format!("{:x}", hasher.finalize())
     }
+
+    /// Checks for equality with another point within a small tolerance
+    /// to handle floating-point inaccuracies.
+    pub fn equals(&self, other: &Point) -> bool {
+        (self.x - other.x).abs() < GEOMETRIC_TOLERANCE &&
+        (self.y - other.y).abs() < GEOMETRIC_TOLERANCE
+    }
 }
 
 // ----------------------------------------------------------------------------

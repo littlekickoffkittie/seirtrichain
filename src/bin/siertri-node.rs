@@ -26,7 +26,7 @@ async fn main() {
         Blockchain::new()
     });
     
-    println!("📊 Current height: {}", blockchain.blocks.last().unwrap().height);
+    println!("📊 Current height: {}", blockchain.blocks.last().unwrap().header.height);
     println!("💾 UTXO count: {}\n", blockchain.state.count());
     
     let node = NetworkNode::new(blockchain, db_path);

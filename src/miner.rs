@@ -12,11 +12,11 @@ pub fn is_hash_valid(hash: &str, difficulty: u64) -> bool {
 
 /// Mines a new block by searching for a nonce that satisfies the current difficulty.
 pub fn mine_block(mut block: Block) -> Result<Block, ChainError> {
-    let difficulty = block.difficulty;
+    let difficulty = block.header.difficulty;
     let mut nonce: u64 = 0;
     
     loop {
-        block.nonce = nonce;
+        block.header.nonce = nonce;
         let hash = block.calculate_hash();
         
         if is_hash_valid(&hash, difficulty) {

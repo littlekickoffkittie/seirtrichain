@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("📍 Address: {}", my_address);
 
     let height = chain.blocks.last()
-        .map(|b| b.height)
+        .map(|b| b.header.height)
         .unwrap_or(0);
     println!("📊 Chain Height: {}", height);
     println!("\n🔺 Your Triangles:");
