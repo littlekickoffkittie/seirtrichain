@@ -57,9 +57,36 @@ impl TriangleState {
         Ok(())
     }
 
-    /// Apply a coinbase transaction (no-op for state, just validation)
-    pub fn apply_coinbase(&mut self, _tx: &CoinbaseTx) {
-        // Coinbase doesn't modify UTXO set
+    /// Apply a coinbase transaction to the state, creating a new triangle as a reward.
+    pub fn apply_coinbase(
+        &mut self,
+        tx: &CoinbaseTx,
+        block_height: BlockHeight,
+    ) -> Result<(), ChainError> {
+        // Create a new triangle with a canonical shape based on the reward area
+        // The position is offset by the block height to ensure uniqueness
+        let side = (2.0 * tx.reward_area as f64).sqrt();
+        if !side.is_finite() || side <= 0.0 {
+            return Err(ChainError::InvalidTransaction(
+                "Invalid reward area for coinbase transaction".to_string(),
+            ));
+        }
+
+        // We'll create a right isosceles triangle at a location based on block height
+        // This ensures that reward triangles don't collide with each other
+        let offset = block_height as f64 * 1000.0; // Use a large offset
+        let new_triangle = Triangle::new(
+            Point { x: offset, y: 0.0 },
+            Point { x: offset + side, y: 0.0 },
+            Point { x: offset, y: side },
+            None,
+            tx.beneficiary_address.clone(),
+        );
+
+        let hash = new_triangle.hash();
+        self.utxo_set.insert(hash, new_triangle);
+
+        Ok(())
     }
 }
 
@@ -79,38 +106,31 @@ pub struct BlockHeader {
 pub struct Block {
     pub header: BlockHeader,
     pub hash: Sha256Hash,
-    pub height: BlockHeight,
-    pub previous_hash: Sha256Hash,
-    pub timestamp: i64,
-    pub difficulty: u64,
-    pub nonce: u64,
-    pub merkle_root: Sha256Hash,
     pub transactions: Vec<Transaction>,
 }
 
 impl Block {
-    pub fn new(height: BlockHeight, previous_hash: Sha256Hash, difficulty: u64, transactions: Vec<Transaction>) -> Self {
+    pub fn new(
+        height: BlockHeight,
+        previous_hash: Sha256Hash,
+        difficulty: u64,
+        transactions: Vec<Transaction>,
+    ) -> Self {
         let timestamp = Utc::now().timestamp();
         let merkle_root = Self::calculate_merkle_root(&transactions);
-        
-        let header = BlockHeader {
-            height,
-            previous_hash: previous_hash.clone(),
-            timestamp,
-            difficulty,
-            nonce: 0,
-            merkle_root: merkle_root.clone(),
-        };
 
-        Block {
-            header: header.clone(),
-            hash: String::new(),
+        let header = BlockHeader {
             height,
             previous_hash,
             timestamp,
             difficulty,
             nonce: 0,
             merkle_root,
+        };
+
+        Block {
+            header,
+            hash: String::new(), // Will be calculated by the miner
             transactions,
         }
     }
@@ -118,12 +138,12 @@ impl Block {
     pub fn calculate_hash(&self) -> String {
         let header_data = format!(
             "{}{}{}{}{}{}",
-            self.height,
-            self.previous_hash,
-            self.timestamp,
-            self.difficulty,
-            self.nonce,
-            self.merkle_root
+            self.header.height,
+            self.header.previous_hash,
+            self.header.timestamp,
+            self.header.difficulty,
+            self.header.nonce,
+            self.header.merkle_root
         );
 
         let mut hasher = Sha256::new();
@@ -133,34 +153,40 @@ impl Block {
 
     pub fn calculate_merkle_root(transactions: &[Transaction]) -> Sha256Hash {
         if transactions.is_empty() {
-            return String::from("0000000000000000000000000000000000000000000000000000000000000000");
+            return "0".repeat(64);
         }
 
-        let mut hashes: Vec<String> = transactions.iter().map(|tx| tx.hash()).collect();
+        let mut hashes: Vec<[u8; 32]> = transactions
+            .iter()
+            .map(|tx| {
+                let mut arr = [0u8; 32];
+                let decoded = hex::decode(tx.hash()).unwrap();
+                arr.copy_from_slice(&decoded);
+                arr
+            })
+            .collect();
 
         while hashes.len() > 1 {
-            let mut next_level = Vec::new();
-
-            for chunk in hashes.chunks(2) {
-                let combined = if chunk.len() == 2 {
-                    format!("{}{}", chunk[0], chunk[1])
-                } else {
-                    format!("{}{}", chunk[0], chunk[0])
-                };
-
-                let mut hasher = Sha256::new();
-                hasher.update(combined.as_bytes());
-                next_level.push(format!("{:x}", hasher.finalize()));
+            if hashes.len() % 2 != 0 {
+                hashes.push(*hashes.last().unwrap());
             }
 
-            hashes = next_level;
+            hashes = hashes
+                .chunks(2)
+                .map(|chunk| {
+                    let mut hasher = Sha256::new();
+                    hasher.update(chunk[0]);
+                    hasher.update(chunk[1]);
+                    hasher.finalize().into()
+                })
+                .collect();
         }
 
-        hashes[0].clone()
+        hex::encode(hashes[0])
     }
 
     pub fn verify_proof_of_work(&self) -> bool {
-        let leading_zeros = "0".repeat(self.difficulty as usize);
+        let leading_zeros = "0".repeat(self.header.difficulty as usize);
         self.hash.starts_with(&leading_zeros)
     }
 }
@@ -207,9 +233,10 @@ impl Mempool {
                     "Coinbase transactions cannot be added to mempool".to_string()
                 ));
             },
-            Transaction::Subdivision(_) => {
-                // Subdivision validation requires state, so we skip it here
-                // It will be validated during mining or in validate_and_prune
+            Transaction::Subdivision(sub_tx) => {
+                // We can still validate the signature without state access, which is a cheap
+                // way to discard obviously invalid transactions.
+                sub_tx.validate_signature()?;
             }
         }
 
@@ -379,12 +406,6 @@ impl Blockchain {
                 merkle_root: "genesis".to_string(),
             },
             hash: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-            height: 0,
-            previous_hash: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-            timestamp: Utc::now().timestamp(),
-            difficulty: 2,
-            nonce: 0,
-            merkle_root: "genesis".to_string(),
             transactions: vec![],
         };
 
@@ -407,11 +428,11 @@ impl Blockchain {
 
         let last_block = self.blocks.last().unwrap();
 
-        if block.height != last_block.height + 1 {
+        if block.header.height != last_block.header.height + 1 {
             return Err(ChainError::InvalidBlockLinkage);
         }
 
-        if block.previous_hash != last_block.hash {
+        if block.header.previous_hash != last_block.hash {
             return Err(ChainError::InvalidBlockLinkage);
         }
 
@@ -420,7 +441,7 @@ impl Blockchain {
         }
 
         let calculated_merkle = Block::calculate_merkle_root(&block.transactions);
-        if block.merkle_root != calculated_merkle {
+        if block.header.merkle_root != calculated_merkle {
             return Err(ChainError::InvalidMerkleRoot);
         }
 
@@ -439,7 +460,7 @@ impl Blockchain {
         }
 
         // Exactly one coinbase transaction per block (or zero for genesis)
-        if block.height > 0 && coinbase_count != 1 {
+        if block.header.height > 0 && coinbase_count != 1 {
             return Err(ChainError::InvalidTransaction(
                 format!("Block must contain exactly one coinbase transaction, found {}", coinbase_count)
             ));
@@ -486,18 +507,18 @@ impl Blockchain {
                     self.state.apply_subdivision(sub_tx)?;
                 },
                 Transaction::Coinbase(cb_tx) => {
-                    self.state.apply_coinbase(cb_tx);
+                    self.state.apply_coinbase(cb_tx, valid_block.header.height)?;
                 },
                 Transaction::Transfer(tx) => {
-                    let mut triangle = self.state.utxo_set.remove(&tx.input_hash)
+                    // Get a mutable reference to the triangle in the UTXO set
+                    let triangle = self.state.utxo_set.get_mut(&tx.input_hash)
                         .ok_or_else(|| ChainError::TriangleNotFound(
                             format!("Transfer input {} missing from UTXO set", tx.input_hash)
                         ))?;
+
+                    // Simply update the owner. The hash (key) remains the same because it is
+                    // based on geometry, not ownership.
                     triangle.owner = tx.new_owner.clone();
-                    let new_hash = format!("{:x}", Sha256::digest(
-                        format!("{}:{}", tx.input_hash, tx.new_owner).as_bytes()
-                    ));
-                    self.state.utxo_set.insert(new_hash, triangle);
                 }
             }
         }
@@ -517,30 +538,30 @@ impl Blockchain {
 
     fn adjust_difficulty(&mut self) {
         if self.blocks.len() < DIFFICULTY_ADJUSTMENT_WINDOW as usize {
-            return;
+            return; // Not enough blocks to adjust
         }
 
-        let window_start = self.blocks.len() - DIFFICULTY_ADJUSTMENT_WINDOW as usize;
-        let first_block = &self.blocks[window_start];
-        let last_block = self.blocks.last().unwrap();
+        let window_start_index = self.blocks.len() - DIFFICULTY_ADJUSTMENT_WINDOW as usize;
+        let window = &self.blocks[window_start_index..];
 
-        let time_taken = last_block.timestamp - first_block.timestamp;
-
-        // Guard against zero or negative time (e.g., in testing scenarios)
-        if time_taken <= 0 {
-            return;
+        // Calculate the average block time over the window
+        let mut total_time = 0;
+        for i in 1..window.len() {
+            let time_diff = window[i].header.timestamp - window[i-1].header.timestamp;
+            total_time += time_diff;
         }
+        let average_time = total_time as f64 / (DIFFICULTY_ADJUSTMENT_WINDOW - 1) as f64;
 
-        let expected_time = TARGET_BLOCK_TIME_SECONDS * DIFFICULTY_ADJUSTMENT_WINDOW as i64;
+        // Define clamping bounds for the adjustment factor
+        const MIN_ADJUSTMENT: f64 = 0.5; // Halve difficulty at most
+        const MAX_ADJUSTMENT: f64 = 2.0; // Double difficulty at most
 
-        // Add max difficulty cap to prevent runaway difficulty
-        const MAX_DIFFICULTY: u64 = 256;
+        // Calculate adjustment factor and clamp it
+        let adjustment_factor = (TARGET_BLOCK_TIME_SECONDS as f64 / average_time).max(MIN_ADJUSTMENT).min(MAX_ADJUSTMENT);
 
-        if time_taken < expected_time / 2 {
-            self.difficulty = (self.difficulty + 1).min(MAX_DIFFICULTY);
-        } else if time_taken > expected_time * 2 && self.difficulty > 1 {
-            self.difficulty -= 1;
-        }
+        // Adjust difficulty, ensuring it doesn't go below a minimum of 1
+        let new_difficulty = (self.difficulty as f64 * adjustment_factor).round() as u64;
+        self.difficulty = new_difficulty.max(1);
     }
 }
 
@@ -651,7 +672,7 @@ mod tests {
 
         let last_block = chain.blocks.last().unwrap();
         let mut new_block = Block::new(
-            last_block.height + 1,
+            last_block.header.height + 1,
             last_block.hash.clone(),
             chain.difficulty,
             transactions,
@@ -660,13 +681,17 @@ mod tests {
         new_block.hash = new_block.calculate_hash();
 
         while !new_block.verify_proof_of_work() {
-            new_block.nonce += 1;
+            new_block.header.nonce += 1;
             new_block.hash = new_block.calculate_hash();
         }
 
         chain.apply_block(new_block).unwrap();
 
-        assert_eq!(chain.state.count(), initial_count + 2);
+        // Initial state has 1 triangle (genesis).
+        // Subdivision tx consumes 1 and creates 3 (+2).
+        // Coinbase tx creates 1 (+1).
+        // Total should be 1 + 2 + 1 = 4.
+        assert_eq!(chain.state.count(), initial_count + 3);
     }
 
     #[test]
@@ -697,7 +722,7 @@ mod tests {
 
         let last_block = chain.blocks.last().unwrap();
         let mut new_block = Block::new(
-            last_block.height + 1,
+            last_block.header.height + 1,
             last_block.hash.clone(),
             chain.difficulty,
             transactions,
@@ -706,7 +731,7 @@ mod tests {
         new_block.hash = new_block.calculate_hash();
 
         while !new_block.verify_proof_of_work() {
-            new_block.nonce += 1;
+            new_block.header.nonce += 1;
             new_block.hash = new_block.calculate_hash();
         }
 
@@ -719,7 +744,7 @@ mod tests {
         let last_block = chain.blocks.last().unwrap();
 
         let mut bad_block = Block::new(
-            last_block.height + 1,
+            last_block.header.height + 1,
             "wrong_hash".to_string(),
             chain.difficulty,
             vec![],
@@ -728,7 +753,7 @@ mod tests {
         bad_block.hash = bad_block.calculate_hash();
 
         while !bad_block.verify_proof_of_work() {
-            bad_block.nonce += 1;
+            bad_block.header.nonce += 1;
             bad_block.hash = bad_block.calculate_hash();
         }
 
@@ -740,14 +765,12 @@ mod tests {
         let chain = Blockchain::new();
         let last_block = chain.blocks.last().unwrap();
 
-        let mut bad_block = Block::new(
-            last_block.height + 1,
+        let bad_block = Block::new(
+            last_block.header.height + 1,
             last_block.hash.clone(),
             chain.difficulty,
             vec![],
         );
-
-        bad_block.hash = "1234567890abcdef".to_string();
 
         assert!(chain.validate_block(&bad_block).is_err());
     }
@@ -787,7 +810,7 @@ mod tests {
 
         let last_block = chain.blocks.last().unwrap();
         let mut new_block = Block::new(
-            last_block.height + 1,
+            last_block.header.height + 1,
             last_block.hash.clone(),
             chain.difficulty,
             transactions,
@@ -796,7 +819,7 @@ mod tests {
         new_block.hash = new_block.calculate_hash();
 
         while !new_block.verify_proof_of_work() {
-            new_block.nonce += 1;
+            new_block.header.nonce += 1;
             new_block.hash = new_block.calculate_hash();
         }
 
@@ -818,12 +841,6 @@ mod tests {
                     merkle_root: String::new(),
                 },
                 hash: format!("{:064x}", i),
-                height: i,
-                previous_hash: chain.blocks.last().unwrap().hash.clone(),
-                timestamp: Utc::now().timestamp() + (i as i64 * 10),
-                difficulty: chain.difficulty,
-                nonce: 0,
-                merkle_root: String::new(),
                 transactions: vec![],
             };
 
@@ -849,12 +866,6 @@ mod tests {
                     merkle_root: String::new(),
                 },
                 hash: format!("{:064x}", i),
-                height: i,
-                previous_hash: chain.blocks.last().unwrap().hash.clone(),
-                timestamp: Utc::now().timestamp() + (i as i64 * 200),
-                difficulty: chain.difficulty,
-                nonce: 0,
-                merkle_root: String::new(),
                 transactions: vec![],
             };
 
@@ -881,12 +892,6 @@ mod tests {
                     merkle_root: String::new(),
                 },
                 hash: format!("{:064x}", i),
-                height: i,
-                previous_hash: chain.blocks.last().unwrap().hash.clone(),
-                timestamp: Utc::now().timestamp() + (i as i64 * 60),
-                difficulty: chain.difficulty,
-                nonce: 0,
-                merkle_root: String::new(),
                 transactions: vec![],
             };
 
@@ -991,9 +996,17 @@ mod tests {
 
         mempool.add_transaction(Transaction::Subdivision(valid_tx)).unwrap();
 
-        // Create invalid subdivision (non-existent parent)
+        // Create invalid subdivision (non-existent parent), but with a valid signature
         let invalid_parent_hash = "nonexistent".to_string();
-        let invalid_tx = SubdivisionTx::new(invalid_parent_hash, children.to_vec(), "addr".to_string(), 0, 1);
+        let keypair2 = KeyPair::generate().unwrap();
+        let address2 = keypair2.address();
+        let mut invalid_tx = SubdivisionTx::new(invalid_parent_hash, children.to_vec(), address2, 0, 1);
+        let message2 = invalid_tx.signable_message();
+        let signature2 = keypair2.sign(&message2).unwrap();
+        let public_key2 = keypair2.public_key.serialize().to_vec();
+        invalid_tx.sign(signature2, public_key2);
+
+        // This should succeed because the signature is valid, even if the state is not.
         mempool.add_transaction(Transaction::Subdivision(invalid_tx)).unwrap();
 
         // Should have 2 transactions
@@ -1032,7 +1045,7 @@ mod tests {
             beneficiary_address: "miner_address".to_string(),
         };
         let new_block = Block::new(
-            last_block.height + 1,
+            last_block.header.height + 1,
             last_block.hash.clone(),
             chain.difficulty,
             vec![Transaction::Coinbase(coinbase), tx],
@@ -1048,7 +1061,7 @@ mod tests {
             if mined_block.verify_proof_of_work() {
                 break;
             }
-            mined_block.nonce += 1;
+            mined_block.header.nonce += 1;
         }
 
         chain.apply_block(mined_block).unwrap();

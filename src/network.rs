@@ -155,7 +155,7 @@ impl NetworkNode {
     
     pub async fn get_height(&self) -> u64 {
         let chain = self.blockchain.read().await;
-        chain.blocks.last().map(|b| b.height).unwrap_or(0)
+        chain.blocks.last().map(|b| b.header.height).unwrap_or(0)
     }
 
     /// Validates an entire blockchain by checking all blocks
@@ -167,13 +167,13 @@ impl NetworkNode {
         // Validate each block's proof of work and merkle root
         for block in &chain.blocks {
             if !block.verify_proof_of_work() {
-                println!("❌ Block {} has invalid proof of work", block.height);
+                println!("❌ Block {} has invalid proof of work", block.header.height);
                 return false;
             }
 
             let calculated_merkle = crate::blockchain::Block::calculate_merkle_root(&block.transactions);
-            if block.merkle_root != calculated_merkle {
-                println!("❌ Block {} has invalid merkle root", block.height);
+            if block.header.merkle_root != calculated_merkle {
+                println!("❌ Block {} has invalid merkle root", block.header.height);
                 return false;
             }
         }
@@ -183,13 +183,13 @@ impl NetworkNode {
             let prev = &chain.blocks[i - 1];
             let curr = &chain.blocks[i];
 
-            if curr.height != prev.height + 1 {
-                println!("❌ Invalid block height at block {}", curr.height);
+            if curr.header.height != prev.header.height + 1 {
+                println!("❌ Invalid block height at block {}", curr.header.height);
                 return false;
             }
 
-            if curr.previous_hash != prev.hash {
-                println!("❌ Invalid block linkage at block {}", curr.height);
+            if curr.header.previous_hash != prev.hash {
+                println!("❌ Invalid block linkage at block {}", curr.header.height);
                 return false;
             }
         }

@@ -57,13 +57,13 @@ impl Database {
             "INSERT OR REPLACE INTO blocks (height, hash, previous_hash, timestamp, difficulty, nonce, merkle_root, transactions)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
-                block.height as i64,
+                block.header.height as i64,
                 block.hash,
-                block.previous_hash,
-                block.timestamp,
-                block.difficulty as i64,
-                block.nonce as i64,
-                block.merkle_root,
+                block.header.previous_hash,
+                block.header.timestamp,
+                block.header.difficulty as i64,
+                block.header.nonce as i64,
+                block.header.merkle_root,
                 transactions_json,
             ],
         ).map_err(|e| ChainError::DatabaseError(format!("Failed to save block: {}", e)))?;
@@ -118,13 +118,13 @@ impl Database {
             "INSERT OR REPLACE INTO blocks (height, hash, previous_hash, timestamp, difficulty, nonce, merkle_root, transactions)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
-                block.height as i64,
+                block.header.height as i64,
                 block.hash,
-                block.previous_hash,
-                block.timestamp,
-                block.difficulty as i64,
-                block.nonce as i64,
-                block.merkle_root,
+                block.header.previous_hash,
+                block.header.timestamp,
+                block.header.difficulty as i64,
+                block.header.nonce as i64,
+                block.header.merkle_root,
                 transactions_json,
             ],
         ).map_err(|e| ChainError::DatabaseError(format!("Failed to save block: {}", e)))?;
@@ -178,19 +178,13 @@ impl Database {
             Ok(Block {
                 header: BlockHeader {
                     height: height as u64,
-                    previous_hash: previous_hash.clone(),
+                    previous_hash,
                     timestamp,
                     difficulty: difficulty as u64,
                     nonce: nonce as u64,
-                    merkle_root: merkle_root.clone(),
+                    merkle_root,
                 },
                 hash,
-                height: height as u64,
-                previous_hash,
-                timestamp,
-                difficulty: difficulty as u64,
-                nonce: nonce as u64,
-                merkle_root,
                 transactions,
             })
         }).map_err(|e| ChainError::DatabaseError(format!("Failed to query blocks: {}", e)))?;
@@ -265,7 +259,7 @@ mod tests {
         let loaded_chain = db.load_blockchain().unwrap();
 
         assert_eq!(loaded_chain.blocks.len(), 1);
-        assert_eq!(loaded_chain.blocks[0].height, 0);
+        assert_eq!(loaded_chain.blocks[0].header.height, 0);
         assert_eq!(loaded_chain.difficulty, chain.difficulty);
     }
 }

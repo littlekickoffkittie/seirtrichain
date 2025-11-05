@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         };
 
                         println!("─────────────────────────────────────────");
-                        println!("{} | Block #{}", direction, block.height);
+                        println!("{} | Block #{}", direction, block.header.height);
                         println!("  🔺 Triangle: {}", &transfer_tx.input_hash[..16.min(transfer_tx.input_hash.len())]);
 
                         if is_sender {
@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("  📝 Memo: {}", memo);
                         }
 
-                        println!("  ⏰ Time: {}", format_timestamp(block.timestamp));
+                        println!("  ⏰ Time: {}", format_timestamp(block.header.timestamp));
                     }
                 }
                 Transaction::Coinbase(coinbase_tx) => {
@@ -82,9 +82,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         received_count += 1;
 
                         println!("─────────────────────────────────────────");
-                        println!("⛏️  Mining Reward | Block #{}", block.height);
+                        println!("⛏️  Mining Reward | Block #{}", block.header.height);
                         println!("  📐 Reward Area: {}", coinbase_tx.reward_area);
-                        println!("  ⏰ Time: {}", format_timestamp(block.timestamp));
+                        println!("  ⏰ Time: {}", format_timestamp(block.header.timestamp));
                     }
                 }
                 Transaction::Subdivision(sub_tx) => {
@@ -92,10 +92,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         tx_count += 1;
 
                         println!("─────────────────────────────────────────");
-                        println!("✂️  Subdivision | Block #{}", block.height);
+                        println!("✂️  Subdivision | Block #{}", block.header.height);
                         println!("  🔺 Parent: {}", &sub_tx.parent_hash[..16.min(sub_tx.parent_hash.len())]);
                         println!("  👶 Children: {} triangles", sub_tx.children.len());
-                        println!("  ⏰ Time: {}", format_timestamp(block.timestamp));
+                        println!("  ⏰ Time: {}", format_timestamp(block.header.timestamp));
                     }
                 }
             }

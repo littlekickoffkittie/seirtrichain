@@ -101,37 +101,9 @@ impl SubdivisionTx {
         self.public_key = Some(public_key);
     }
 
-    pub fn validate(&self, state: &TriangleState) -> Result<(), ChainError> {
-        if !state.utxo_set.contains_key(&self.parent_hash) {
-            return Err(ChainError::TriangleNotFound(format!(
-                "Parent triangle {} not found in UTXO set",
-                self.parent_hash
-            )));
-        }
-
-        let parent = state.utxo_set.get(&self.parent_hash).unwrap();
-        let expected_children = parent.subdivide();
-
-        if self.children.len() != 3 {
-            return Err(ChainError::InvalidTransaction(
-                "Subdivision must produce exactly 3 children".to_string(),
-            ));
-        }
-
-        for (i, child) in self.children.iter().enumerate() {
-            if (child.a.x - expected_children[i].a.x).abs() > 1e-10 ||
-               (child.a.y - expected_children[i].a.y).abs() > 1e-10 ||
-               (child.b.x - expected_children[i].b.x).abs() > 1e-10 ||
-               (child.b.y - expected_children[i].b.y).abs() > 1e-10 ||
-               (child.c.x - expected_children[i].c.x).abs() > 1e-10 ||
-               (child.c.y - expected_children[i].c.y).abs() > 1e-10 {
-                return Err(ChainError::InvalidTransaction(format!(
-                    "Child {} does not match expected subdivision",
-                    i
-                )));
-            }
-        }
-
+    /// Validates just the signature of the transaction, without access to blockchain state.
+    /// This is useful for early validation in the mempool.
+    pub fn validate_signature(&self) -> Result<(), ChainError> {
         if self.signature.is_none() || self.public_key.is_none() {
             return Err(ChainError::InvalidTransaction(
                 "Transaction not signed".to_string(),
@@ -149,6 +121,43 @@ impl SubdivisionTx {
             return Err(ChainError::InvalidTransaction(
                 "Invalid signature".to_string(),
             ));
+        }
+
+        Ok(())
+    }
+
+    /// Performs a full validation of the transaction against the current blockchain state.
+    pub fn validate(&self, state: &TriangleState) -> Result<(), ChainError> {
+        // First, perform a stateless signature check.
+        self.validate_signature()?;
+
+        // Then, validate against the current state (UTXO set).
+        if !state.utxo_set.contains_key(&self.parent_hash) {
+            return Err(ChainError::TriangleNotFound(format!(
+                "Parent triangle {} not found in UTXO set",
+                self.parent_hash
+            )));
+        }
+
+        let parent = state.utxo_set.get(&self.parent_hash).unwrap();
+        let expected_children = parent.subdivide();
+
+        if self.children.len() != 3 {
+            return Err(ChainError::InvalidTransaction(
+                "Subdivision must produce exactly 3 children".to_string(),
+            ));
+        }
+
+        for (i, child) in self.children.iter().enumerate() {
+            let expected = &expected_children[i];
+            if !child.a.equals(&expected.a) ||
+               !child.b.equals(&expected.b) ||
+               !child.c.equals(&expected.c) {
+                return Err(ChainError::InvalidTransaction(format!(
+                    "Child {} geometry does not match expected subdivision",
+                    i
+                )));
+            }
         }
 
         Ok(())

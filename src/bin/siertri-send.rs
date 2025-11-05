@@ -94,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let last_block = chain.blocks.last()
         .ok_or("Blockchain is empty")?;
     let mut new_block = siertrichain::blockchain::Block::new(
-        last_block.height + 1,
+        last_block.header.height + 1,
         last_block.hash.clone(),
         chain.difficulty,
         transactions,
