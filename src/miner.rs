@@ -1,13 +1,13 @@
 //! Proof-of-Work (PoW) implementation for siertrichain.
 
-use crate::blockchain::Block;
+use crate::blockchain::{Block, Sha256Hash};
 use crate::error::ChainError;
 
 /// Checks if a hash meets the required difficulty target.
 /// The difficulty is the required number of leading zeros in the hash.
-pub fn is_hash_valid(hash: &str, difficulty: u64) -> bool {
+pub fn is_hash_valid(hash: &Sha256Hash, difficulty: u64) -> bool {
     let required_prefix = "0".repeat(difficulty as usize);
-    hash.starts_with(&required_prefix)
+    hex::encode(hash).starts_with(&required_prefix)
 }
 
 /// Mines a new block by searching for a nonce that satisfies the current difficulty.

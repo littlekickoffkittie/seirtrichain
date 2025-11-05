@@ -3,6 +3,7 @@
 
 use serde::{Serialize, Deserialize};
 use sha2::{Digest, Sha256};
+use crate::blockchain::Sha256Hash;
 
 /// Coordinate type for high-precision geometric calculations.
 pub type Coord = f64;
@@ -46,11 +47,15 @@ impl Point {
     }
 
     /// Calculates a simple cryptographic hash of the point data.
-    pub fn hash(&self) -> String {
+    pub fn hash(&self) -> Sha256Hash {
         let data = format!("{:.15},{:.15}", self.x, self.y);
         let mut hasher = Sha256::new();
         hasher.update(data.as_bytes());
-        format!("{:x}", hasher.finalize())
+        hasher.finalize().into()
+    }
+
+    pub fn hash_str(&self) -> String {
+        hex::encode(self.hash())
     }
 
     /// Checks for equality with another point within a small tolerance
@@ -71,13 +76,13 @@ pub struct Triangle {
     pub a: Point,
     pub b: Point,
     pub c: Point,
-    pub parent_hash: Option<String>,
+    pub parent_hash: Option<Sha256Hash>,
     pub owner: String,
 }
 
 impl Triangle {
     /// Creates a new Triangle from three vertices.
-    pub fn new(a: Point, b: Point, c: Point, parent_hash: Option<String>, owner: String) -> Self {
+    pub fn new(a: Point, b: Point, c: Point, parent_hash: Option<Sha256Hash>, owner: String) -> Self {
         Triangle { a, b, c, parent_hash, owner }
     }
 
@@ -93,14 +98,18 @@ impl Triangle {
     }
 
     /// Calculates the unique cryptographic hash of the triangle.
-    pub fn hash(&self) -> String {
-        let mut hashes = vec![self.a.hash(), self.b.hash(), self.c.hash()];
+    pub fn hash(&self) -> Sha256Hash {
+        let mut hashes = vec![self.a.hash_str(), self.b.hash_str(), self.c.hash_str()];
         hashes.sort(); 
         
         let data = hashes.join("");
         let mut hasher = Sha256::new();
         hasher.update(data.as_bytes());
-        format!("{:x}", hasher.finalize())
+        hasher.finalize().into()
+    }
+
+    pub fn hash_str(&self) -> String {
+        hex::encode(self.hash())
     }
 
     // ------------------------------------------------------------------------
@@ -135,10 +144,10 @@ impl Triangle {
         let parent_hash = Some(self.hash());
 
         // Child 1 (A-mid_ab-mid_ca)
-        let t1 = Triangle::new(self.a, mid_ab, mid_ca, parent_hash.clone(), self.owner.clone());
+        let t1 = Triangle::new(self.a, mid_ab, mid_ca, parent_hash, self.owner.clone());
 
         // Child 2 (mid_ab-B-mid_bc)
-        let t2 = Triangle::new(mid_ab, self.b, mid_bc, parent_hash.clone(), self.owner.clone());
+        let t2 = Triangle::new(mid_ab, self.b, mid_bc, parent_hash, self.owner.clone());
 
         // Child 3 (mid_ca-mid_bc-C)
         let t3 = Triangle::new(mid_ca, mid_bc, self.c, parent_hash, self.owner.clone());

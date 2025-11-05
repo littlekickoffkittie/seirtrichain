@@ -1,7 +1,7 @@
 //! Transaction types for siertrichain
 
 use sha2::{Digest, Sha256};
-use crate::blockchain::TriangleState;
+use crate::blockchain::{Sha256Hash, TriangleState};
 use crate::geometry::Triangle;
 use crate::error::ChainError;
 
@@ -16,31 +16,37 @@ pub enum Transaction {
 }
 
 impl Transaction {
+    pub fn hash_str(&self) -> String {
+        hex::encode(self.hash())
+    }
     /// Calculate the hash of this transaction
-    pub fn hash(&self) -> String {
-        let tx_data = match self {
-            Transaction::Subdivision(tx) => format!(
-                "{}{}{}{}{}",
-                tx.parent_hash,
-                tx.children.iter().map(|c| c.hash()).collect::<Vec<_>>().join(""),
-                tx.owner_address,
-                tx.fee,
-                tx.nonce,
-            ),
-            Transaction::Coinbase(tx) => format!(
-                "coinbase{}{}",
-                tx.reward_area,
-                tx.beneficiary_address,
-            ),
-            Transaction::Transfer(tx) => format!(
-                "transfer{}{}{}{}{}",
-                tx.input_hash, tx.new_owner, tx.sender, tx.fee, tx.nonce
-            ),
-        };
-
+    pub fn hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(tx_data.as_bytes());
-        format!("{:x}", hasher.finalize())
+        match self {
+            Transaction::Subdivision(tx) => {
+                hasher.update(tx.parent_hash);
+                for child in &tx.children {
+                    hasher.update(child.hash());
+                }
+                hasher.update(tx.owner_address.as_bytes());
+                hasher.update(tx.fee.to_le_bytes());
+                hasher.update(tx.nonce.to_le_bytes());
+            }
+            Transaction::Coinbase(tx) => {
+                hasher.update("coinbase".as_bytes());
+                hasher.update(tx.reward_area.to_le_bytes());
+                hasher.update(tx.beneficiary_address.as_bytes());
+            }
+            Transaction::Transfer(tx) => {
+                hasher.update("transfer".as_bytes());
+                hasher.update(tx.input_hash);
+                hasher.update(tx.new_owner.as_bytes());
+                hasher.update(tx.sender.as_bytes());
+                hasher.update(tx.fee.to_le_bytes());
+                hasher.update(tx.nonce.to_le_bytes());
+            }
+        };
+        hasher.finalize().into()
     }
 
     /// Validate this transaction against the current UTXO state
@@ -56,7 +62,7 @@ impl Transaction {
 /// Subdivision transaction: splits one parent triangle into three children
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SubdivisionTx {
-    pub parent_hash: String,
+    pub parent_hash: Sha256Hash,
     pub children: Vec<Triangle>,
     pub owner_address: Address,
     pub fee: u64,
@@ -67,7 +73,7 @@ pub struct SubdivisionTx {
 
 impl SubdivisionTx {
     pub fn new(
-        parent_hash: String,
+        parent_hash: Sha256Hash,
         children: Vec<Triangle>,
         owner_address: Address,
         fee: u64,
@@ -86,9 +92,9 @@ impl SubdivisionTx {
 
     pub fn signable_message(&self) -> Vec<u8> {
         let mut message = Vec::new();
-        message.extend_from_slice(self.parent_hash.as_bytes());
+        message.extend_from_slice(&self.parent_hash);
         for child in &self.children {
-            message.extend_from_slice(child.hash().as_bytes());
+            message.extend_from_slice(&child.hash());
         }
         message.extend_from_slice(self.owner_address.as_bytes());
         message.extend_from_slice(&self.fee.to_le_bytes());
@@ -135,7 +141,7 @@ impl SubdivisionTx {
         if !state.utxo_set.contains_key(&self.parent_hash) {
             return Err(ChainError::TriangleNotFound(format!(
                 "Parent triangle {} not found in UTXO set",
-                self.parent_hash
+                hex::encode(self.parent_hash)
             )));
         }
 
@@ -204,7 +210,7 @@ impl CoinbaseTx {
 /// Transfer transaction - moves ownership of a triangle
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TransferTx {
-    pub input_hash: String,
+    pub input_hash: Sha256Hash,
     pub new_owner: Address,
     pub sender: Address,
     pub fee: u64,
@@ -219,7 +225,7 @@ impl TransferTx {
     /// Maximum memo length (256 characters)
     pub const MAX_MEMO_LENGTH: usize = 256;
 
-    pub fn new(input_hash: String, new_owner: Address, sender: Address, fee: u64, nonce: u64) -> Self {
+    pub fn new(input_hash: Sha256Hash, new_owner: Address, sender: Address, fee: u64, nonce: u64) -> Self {
         TransferTx {
             input_hash,
             new_owner,
@@ -243,9 +249,14 @@ impl TransferTx {
     }
     
     pub fn signable_message(&self) -> Vec<u8> {
-        format!("TRANSFER:{}:{}:{}:{}:{}", 
-            self.input_hash, self.new_owner, self.sender, self.fee, self.nonce)
-            .into_bytes()
+        let mut message = Vec::new();
+        message.extend_from_slice("TRANSFER:".as_bytes());
+        message.extend_from_slice(&self.input_hash);
+        message.extend_from_slice(self.new_owner.as_bytes());
+        message.extend_from_slice(self.sender.as_bytes());
+        message.extend_from_slice(&self.fee.to_le_bytes());
+        message.extend_from_slice(&self.nonce.to_le_bytes());
+        message
     }
     
     pub fn sign(&mut self, signature: Vec<u8>, public_key: Vec<u8>) {
@@ -277,7 +288,7 @@ impl TransferTx {
 mod tests {
     use super::*;
     use crate::blockchain::TriangleState;
-    use crate::crypto::KeyPair;
+    use crate::crypto::{self, KeyPair};
     use crate::geometry::{Point, Triangle};
 
     #[test]
@@ -291,7 +302,7 @@ mod tests {
             "test_owner".to_string(),
         );
         let parent_hash = parent.hash();
-        state.utxo_set.insert(parent_hash.clone(), parent.clone());
+        state.utxo_set.insert(parent_hash, parent.clone());
 
         let children = parent.subdivide();
         let keypair = KeyPair::generate().unwrap();
@@ -317,7 +328,7 @@ mod tests {
             "test_owner".to_string(),
         );
         let parent_hash = parent.hash();
-        state.utxo_set.insert(parent_hash.clone(), parent.clone());
+        state.utxo_set.insert(parent_hash, parent.clone());
 
         let children = parent.subdivide();
         let address = "test_address".to_string();
@@ -337,7 +348,7 @@ mod tests {
             "test_owner".to_string(),
         );
         let parent_hash = parent.hash();
-        state.utxo_set.insert(parent_hash.clone(), parent.clone());
+        state.utxo_set.insert(parent_hash, parent.clone());
 
         let children = parent.subdivide();
         let keypair = KeyPair::generate().unwrap();
@@ -362,7 +373,7 @@ mod tests {
             "test_owner".to_string(),
         );
         let parent_hash = parent.hash();
-        state.utxo_set.insert(parent_hash.clone(), parent);
+        state.utxo_set.insert(parent_hash, parent);
 
         let bad_child = Triangle::new(
             Point { x: 0.0, y: 0.0 },
