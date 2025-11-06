@@ -35,7 +35,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (hash, triangle) in &chain.state.utxo_set {
         my_triangles += 1;
         total_area += triangle.area();
-        let hash_prefix = if hash.len() >= 16 { &hash[..16] } else { hash };
+        let hash_hex = hex::encode(hash);
+        let hash_prefix = &hash_hex[..16];
         println!("  • {} (area: {:.6})", hash_prefix, triangle.area());
     }
 

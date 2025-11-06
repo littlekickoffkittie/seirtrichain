@@ -7,7 +7,7 @@ use crate::transaction::{Transaction, SubdivisionTx, CoinbaseTx};
 use crate::error::ChainError;
 use chrono::Utc;
 
-pub type Sha256Hash = String;
+pub type Sha256Hash = [u8; 32];
 pub type BlockHeight = u64;
 
 /// The genesis triangle - the root of all fractals
@@ -43,7 +43,7 @@ impl TriangleState {
         if !self.utxo_set.contains_key(&tx.parent_hash) {
             return Err(ChainError::TriangleNotFound(format!(
                 "Parent triangle {} not found",
-                tx.parent_hash
+                hex::encode(tx.parent_hash)
             )));
         }
 
@@ -65,7 +65,7 @@ impl TriangleState {
     ) -> Result<(), ChainError> {
         // Create a new triangle with a canonical shape based on the reward area
         // The position is offset by the block height to ensure uniqueness
-        let side = (2.0 * tx.reward_area as f64).sqrt();
+        let side = (2.0 * tx.reward_area as f64).sqrt() as f64;
         if !side.is_finite() || side <= 0.0 {
             return Err(ChainError::InvalidTransaction(
                 "Invalid reward area for coinbase transaction".to_string(),
@@ -130,41 +130,28 @@ impl Block {
 
         Block {
             header,
-            hash: String::new(), // Will be calculated by the miner
+            hash: [0; 32], // Will be calculated by the miner
             transactions,
         }
     }
 
-    pub fn calculate_hash(&self) -> String {
-        let header_data = format!(
-            "{}{}{}{}{}{}",
-            self.header.height,
-            self.header.previous_hash,
-            self.header.timestamp,
-            self.header.difficulty,
-            self.header.nonce,
-            self.header.merkle_root
-        );
-
+    pub fn calculate_hash(&self) -> Sha256Hash {
         let mut hasher = Sha256::new();
-        hasher.update(header_data.as_bytes());
-        format!("{:x}", hasher.finalize())
+        hasher.update(self.header.height.to_le_bytes());
+        hasher.update(self.header.previous_hash);
+        hasher.update(self.header.timestamp.to_le_bytes());
+        hasher.update(self.header.difficulty.to_le_bytes());
+        hasher.update(self.header.nonce.to_le_bytes());
+        hasher.update(self.header.merkle_root);
+        hasher.finalize().into()
     }
 
     pub fn calculate_merkle_root(transactions: &[Transaction]) -> Sha256Hash {
         if transactions.is_empty() {
-            return "0".repeat(64);
+            return [0; 32];
         }
 
-        let mut hashes: Vec<[u8; 32]> = transactions
-            .iter()
-            .map(|tx| {
-                let mut arr = [0u8; 32];
-                let decoded = hex::decode(tx.hash()).unwrap();
-                arr.copy_from_slice(&decoded);
-                arr
-            })
-            .collect();
+        let mut hashes: Vec<[u8; 32]> = transactions.iter().map(|tx| tx.hash()).collect();
 
         while hashes.len() > 1 {
             if hashes.len() % 2 != 0 {
@@ -182,12 +169,12 @@ impl Block {
                 .collect();
         }
 
-        hex::encode(hashes[0])
+        hashes[0]
     }
 
     pub fn verify_proof_of_work(&self) -> bool {
         let leading_zeros = "0".repeat(self.header.difficulty as usize);
-        self.hash.starts_with(&leading_zeros)
+        hex::encode(self.hash).starts_with(&leading_zeros)
     }
 }
 
@@ -280,7 +267,7 @@ impl Mempool {
 
         // Find transaction with lowest fee
         let mut lowest_fee = u64::MAX;
-        let mut lowest_hash: Option<String> = None;
+        let mut lowest_hash: Option<Sha256Hash> = None;
 
         for (hash, tx) in &self.transactions {
             let fee = match tx {
@@ -291,7 +278,7 @@ impl Mempool {
 
             if fee < lowest_fee {
                 lowest_fee = fee;
-                lowest_hash = Some(hash.clone());
+                lowest_hash = Some(*hash);
             }
         }
 
@@ -303,7 +290,7 @@ impl Mempool {
     }
 
     /// Remove a transaction from the mempool
-    pub fn remove_transaction(&mut self, tx_hash: &str) -> Option<Transaction> {
+    pub fn remove_transaction(&mut self, tx_hash: &Sha256Hash) -> Option<Transaction> {
         self.transactions.remove(tx_hash)
     }
 
@@ -313,12 +300,12 @@ impl Mempool {
     }
 
     /// Get a specific transaction by hash
-    pub fn get_transaction(&self, tx_hash: &str) -> Option<&Transaction> {
+    pub fn get_transaction(&self, tx_hash: &Sha256Hash) -> Option<&Transaction> {
         self.transactions.get(tx_hash)
     }
 
     /// Remove multiple transactions (e.g., after they're included in a block)
-    pub fn remove_transactions(&mut self, tx_hashes: &[String]) {
+    pub fn remove_transactions(&mut self, tx_hashes: &[Sha256Hash]) {
         for hash in tx_hashes {
             self.transactions.remove(hash);
         }
@@ -363,7 +350,7 @@ impl Mempool {
             };
 
             if !is_valid {
-                to_remove.push(hash.clone());
+                to_remove.push(*hash);
             }
         }
 
@@ -394,23 +381,23 @@ impl Blockchain {
         let mut state = TriangleState::new();
         let genesis = genesis_triangle();
         let genesis_hash = genesis.hash();
-        state.utxo_set.insert(genesis_hash.clone(), genesis);
+        state.utxo_set.insert(genesis_hash, genesis);
 
         let genesis_block = Block {
             header: BlockHeader {
                 height: 0,
-                previous_hash: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+                previous_hash: [0; 32],
                 timestamp: Utc::now().timestamp(),
                 difficulty: 2,
                 nonce: 0,
-                merkle_root: "genesis".to_string(),
+                merkle_root: [0; 32],
             },
-            hash: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            hash: [0; 32],
             transactions: vec![],
         };
 
         let mut block_index = HashMap::new();
-        block_index.insert(genesis_block.hash.clone(), genesis_block.clone());
+        block_index.insert(genesis_block.hash, genesis_block.clone());
 
         Blockchain {
             blocks: vec![genesis_block],
@@ -471,7 +458,7 @@ impl Blockchain {
                 Transaction::Subdivision(tx) => {
                     if !self.state.utxo_set.contains_key(&tx.parent_hash) {
                         return Err(ChainError::InvalidTransaction(
-                            format!("Parent triangle {} not in UTXO set", tx.parent_hash)
+                            format!("Parent triangle {} not in UTXO set", hex::encode(tx.parent_hash))
                         ));
                     }
                     tx.validate(&self.state)?;
@@ -482,7 +469,7 @@ impl Blockchain {
                 Transaction::Transfer(tx) => {
                     if !self.state.utxo_set.contains_key(&tx.input_hash) {
                         return Err(ChainError::InvalidTransaction(
-                            format!("Transfer input {} not in UTXO set", tx.input_hash)
+                            format!("Transfer input {} not in UTXO set", hex::encode(tx.input_hash))
                         ));
                     }
                     tx.validate()?;
@@ -497,7 +484,7 @@ impl Blockchain {
         self.validate_block(&valid_block)?;
 
         // Collect transaction hashes before applying
-        let tx_hashes: Vec<String> = valid_block.transactions.iter()
+        let tx_hashes: Vec<Sha256Hash> = valid_block.transactions.iter()
             .map(|tx| tx.hash())
             .collect();
 
@@ -513,7 +500,7 @@ impl Blockchain {
                     // Get a mutable reference to the triangle in the UTXO set
                     let triangle = self.state.utxo_set.get_mut(&tx.input_hash)
                         .ok_or_else(|| ChainError::TriangleNotFound(
-                            format!("Transfer input {} missing from UTXO set", tx.input_hash)
+                            format!("Transfer input {} missing from UTXO set", hex::encode(tx.input_hash))
                         ))?;
 
                     // Simply update the owner. The hash (key) remains the same because it is
@@ -524,7 +511,7 @@ impl Blockchain {
         }
 
         self.blocks.push(valid_block.clone());
-        self.block_index.insert(valid_block.hash.clone(), valid_block);
+        self.block_index.insert(valid_block.hash, valid_block);
         self.adjust_difficulty();
 
         // Remove confirmed transactions from mempool
@@ -596,7 +583,7 @@ mod tests {
     #[test]
     fn test_merkle_tree_empty() {
         let root = Block::calculate_merkle_root(&[]);
-        assert_eq!(root, "0000000000000000000000000000000000000000000000000000000000000000");
+        assert_eq!(root, [0; 32]);
     }
 
     #[test]
@@ -607,7 +594,7 @@ mod tests {
         };
         let txs = vec![Transaction::Coinbase(coinbase)];
         let root = Block::calculate_merkle_root(&txs);
-        assert_eq!(root.len(), 64);
+        assert_eq!(root.len(), 32);
     }
 
     #[test]
@@ -621,7 +608,7 @@ mod tests {
             beneficiary_address: "miner2".to_string(),
         });
         let root = Block::calculate_merkle_root(&[tx1, tx2]);
-        assert_eq!(root.len(), 64);
+        assert_eq!(root.len(), 32);
     }
 
     #[test]
@@ -639,7 +626,7 @@ mod tests {
             beneficiary_address: "miner3".to_string(),
         });
         let root = Block::calculate_merkle_root(&[tx1, tx2, tx3]);
-        assert_eq!(root.len(), 64);
+        assert_eq!(root.len(), 32);
     }
 
     #[test]
@@ -647,7 +634,7 @@ mod tests {
         let mut chain = Blockchain::new();
         let initial_count = chain.state.count();
 
-        let genesis_hash = chain.state.utxo_set.keys().next().unwrap().clone();
+        let genesis_hash = *chain.state.utxo_set.keys().next().unwrap();
         let genesis_tri = chain.state.utxo_set.get(&genesis_hash).unwrap().clone();
         let children = genesis_tri.subdivide();
 
@@ -673,7 +660,7 @@ mod tests {
         let last_block = chain.blocks.last().unwrap();
         let mut new_block = Block::new(
             last_block.header.height + 1,
-            last_block.hash.clone(),
+            last_block.hash,
             chain.difficulty,
             transactions,
         );
@@ -697,7 +684,7 @@ mod tests {
     #[test]
     fn test_block_validation_success() {
         let mut chain = Blockchain::new();
-        let genesis_hash = chain.state.utxo_set.keys().next().unwrap().clone();
+        let genesis_hash = *chain.state.utxo_set.keys().next().unwrap();
         let genesis_tri = chain.state.utxo_set.get(&genesis_hash).unwrap().clone();
         let children = genesis_tri.subdivide();
 
@@ -723,7 +710,7 @@ mod tests {
         let last_block = chain.blocks.last().unwrap();
         let mut new_block = Block::new(
             last_block.header.height + 1,
-            last_block.hash.clone(),
+            last_block.hash,
             chain.difficulty,
             transactions,
         );
@@ -745,7 +732,7 @@ mod tests {
 
         let mut bad_block = Block::new(
             last_block.header.height + 1,
-            "wrong_hash".to_string(),
+            [1; 32],
             chain.difficulty,
             vec![],
         );
@@ -767,7 +754,7 @@ mod tests {
 
         let bad_block = Block::new(
             last_block.header.height + 1,
-            last_block.hash.clone(),
+            last_block.hash,
             chain.difficulty,
             vec![],
         );
@@ -778,14 +765,14 @@ mod tests {
     #[test]
     fn test_block_validation_double_spend_in_block() {
         let mut chain = Blockchain::new();
-        let genesis_hash = chain.state.utxo_set.keys().next().unwrap().clone();
+        let genesis_hash = *chain.state.utxo_set.keys().next().unwrap();
         let genesis_tri = chain.state.utxo_set.get(&genesis_hash).unwrap().clone();
         let children = genesis_tri.subdivide();
 
         let keypair = KeyPair::generate().unwrap();
         let address = keypair.address();
 
-        let mut tx1 = SubdivisionTx::new(genesis_hash.clone(), children.to_vec(), address.clone(), 0, 1);
+        let mut tx1 = SubdivisionTx::new(genesis_hash, children.to_vec(), address.clone(), 0, 1);
         let message1 = tx1.signable_message();
         let signature1 = keypair.sign(&message1).unwrap();
         let public_key1 = keypair.public_key.serialize().to_vec();
@@ -811,7 +798,7 @@ mod tests {
         let last_block = chain.blocks.last().unwrap();
         let mut new_block = Block::new(
             last_block.header.height + 1,
-            last_block.hash.clone(),
+            last_block.hash,
             chain.difficulty,
             transactions,
         );
@@ -834,13 +821,13 @@ mod tests {
             let block = Block {
                 header: BlockHeader {
                     height: i,
-                    previous_hash: chain.blocks.last().unwrap().hash.clone(),
+                    previous_hash: chain.blocks.last().unwrap().hash,
                     timestamp: Utc::now().timestamp() + (i as i64 * 10),
                     difficulty: chain.difficulty,
                     nonce: 0,
-                    merkle_root: String::new(),
+                    merkle_root: [0; 32],
                 },
-                hash: format!("{:064x}", i),
+                hash: [i as u8; 32],
                 transactions: vec![],
             };
 
@@ -859,13 +846,13 @@ mod tests {
             let block = Block {
                 header: BlockHeader {
                     height: i,
-                    previous_hash: chain.blocks.last().unwrap().hash.clone(),
+                    previous_hash: chain.blocks.last().unwrap().hash,
                     timestamp: Utc::now().timestamp() + (i as i64 * 200),
                     difficulty: chain.difficulty,
                     nonce: 0,
-                    merkle_root: String::new(),
+                    merkle_root: [0; 32],
                 },
-                hash: format!("{:064x}", i),
+                hash: [i as u8; 32],
                 transactions: vec![],
             };
 
@@ -885,13 +872,13 @@ mod tests {
             let block = Block {
                 header: BlockHeader {
                     height: i,
-                    previous_hash: chain.blocks.last().unwrap().hash.clone(),
+                    previous_hash: chain.blocks.last().unwrap().hash,
                     timestamp: Utc::now().timestamp() + (i as i64 * 60),
                     difficulty: chain.difficulty,
                     nonce: 0,
-                    merkle_root: String::new(),
+                    merkle_root: [0; 32],
                 },
-                hash: format!("{:064x}", i),
+                hash: [i as u8; 32],
                 transactions: vec![],
             };
 
@@ -908,11 +895,11 @@ mod tests {
         let mut state = TriangleState::new();
         let genesis = genesis_triangle();
         let genesis_hash = genesis.hash();
-        state.utxo_set.insert(genesis_hash.clone(), genesis.clone());
+        state.utxo_set.insert(genesis_hash, genesis.clone());
         let children = genesis.subdivide();
         let keypair = KeyPair::generate().unwrap();
         let address = keypair.address();
-        let mut valid_tx = SubdivisionTx::new(genesis_hash.clone(), children.to_vec(), address, 0, 1);
+        let mut valid_tx = SubdivisionTx::new(genesis_hash, children.to_vec(), address, 0, 1);
         let message = valid_tx.signable_message();
         let signature = keypair.sign(&message).unwrap();
         let public_key = keypair.public_key.serialize().to_vec();
@@ -930,11 +917,11 @@ mod tests {
         let mut state = TriangleState::new();
         let genesis = genesis_triangle();
         let genesis_hash = genesis.hash();
-        state.utxo_set.insert(genesis_hash.clone(), genesis.clone());
+        state.utxo_set.insert(genesis_hash, genesis.clone());
         let children = genesis.subdivide();
         let keypair = KeyPair::generate().unwrap();
         let address = keypair.address();
-        let mut valid_tx = SubdivisionTx::new(genesis_hash.clone(), children.to_vec(), address, 0, 1);
+        let mut valid_tx = SubdivisionTx::new(genesis_hash, children.to_vec(), address, 0, 1);
         let message = valid_tx.signable_message();
         let signature = keypair.sign(&message).unwrap();
         let public_key = keypair.public_key.serialize().to_vec();
@@ -956,11 +943,11 @@ mod tests {
         let mut state = TriangleState::new();
         let genesis = genesis_triangle();
         let genesis_hash = genesis.hash();
-        state.utxo_set.insert(genesis_hash.clone(), genesis.clone());
+        state.utxo_set.insert(genesis_hash, genesis.clone());
         let children = genesis.subdivide();
         let keypair = KeyPair::generate().unwrap();
         let address = keypair.address();
-        let mut valid_tx = SubdivisionTx::new(genesis_hash.clone(), children.to_vec(), address, 0, 1);
+        let mut valid_tx = SubdivisionTx::new(genesis_hash, children.to_vec(), address, 0, 1);
         let message = valid_tx.signable_message();
         let signature = keypair.sign(&message).unwrap();
         let public_key = keypair.public_key.serialize().to_vec();
@@ -982,13 +969,13 @@ mod tests {
         // Add genesis triangle to state
         let genesis = genesis_triangle();
         let genesis_hash = genesis.hash();
-        state.utxo_set.insert(genesis_hash.clone(), genesis.clone());
+        state.utxo_set.insert(genesis_hash, genesis.clone());
 
         // Create valid subdivision transaction
         let children = genesis.subdivide();
         let keypair = KeyPair::generate().unwrap();
         let address = keypair.address();
-        let mut valid_tx = SubdivisionTx::new(genesis_hash.clone(), children.to_vec(), address, 0, 1);
+        let mut valid_tx = SubdivisionTx::new(genesis_hash, children.to_vec(), address, 0, 1);
         let message = valid_tx.signable_message();
         let signature = keypair.sign(&message).unwrap();
         let public_key = keypair.public_key.serialize().to_vec();
@@ -997,7 +984,7 @@ mod tests {
         mempool.add_transaction(Transaction::Subdivision(valid_tx)).unwrap();
 
         // Create invalid subdivision (non-existent parent), but with a valid signature
-        let invalid_parent_hash = "nonexistent".to_string();
+        let invalid_parent_hash = [1; 32];
         let keypair2 = KeyPair::generate().unwrap();
         let address2 = keypair2.address();
         let mut invalid_tx = SubdivisionTx::new(invalid_parent_hash, children.to_vec(), address2, 0, 1);
@@ -1029,7 +1016,7 @@ mod tests {
         let children = genesis.subdivide();
         let keypair = KeyPair::generate().unwrap();
         let address = keypair.address();
-        let mut valid_tx = SubdivisionTx::new(genesis_hash.clone(), children.to_vec(), address, 0, 1);
+        let mut valid_tx = SubdivisionTx::new(genesis_hash, children.to_vec(), address, 0, 1);
         let message = valid_tx.signable_message();
         let signature = keypair.sign(&message).unwrap();
         let public_key = keypair.public_key.serialize().to_vec();
@@ -1046,7 +1033,7 @@ mod tests {
         };
         let new_block = Block::new(
             last_block.header.height + 1,
-            last_block.hash.clone(),
+            last_block.hash,
             chain.difficulty,
             vec![Transaction::Coinbase(coinbase), tx],
         );

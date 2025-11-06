@@ -32,14 +32,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let secret_key = SecretKey::from_slice(&secret_bytes)?;
     let keypair = KeyPair::from_secret_key(secret_key);
 
-    let parent_hash = chain.state.utxo_set.keys().next()
-        .ok_or("No UTXOs available")?
-        .clone();
+    let parent_hash = *chain.state.utxo_set.keys().next()
+        .ok_or("No UTXOs available")?;
     let parent_triangle = chain.state.utxo_set.get(&parent_hash)
         .ok_or("Parent triangle not found")?
         .clone();
 
-    let hash_prefix = if parent_hash.len() >= 16 { &parent_hash[..16] } else { &parent_hash };
+    let hash_hex = hex::encode(parent_hash);
+    let hash_prefix = &hash_hex[..16];
     println!("🔺 Subdividing triangle {}...", hash_prefix);
     let children = parent_triangle.subdivide();
 
@@ -62,14 +62,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("Blockchain is empty")?;
     let mut new_block = siertrichain::blockchain::Block::new(
         last_block.header.height + 1,
-        last_block.hash.clone(),
+        last_block.hash,
         chain.difficulty,
         transactions,
     );
 
     new_block = mine_block(new_block)?;
 
-    let new_hash_prefix = if new_block.hash.len() >= 16 { &new_block.hash[..16] } else { &new_block.hash };
+    let new_hash_hex = hex::encode(new_block.hash);
+    let new_hash_prefix = &new_hash_hex[..16];
     println!("✅ Block mined! Hash: {}", new_hash_prefix);
 
     chain.apply_block(new_block.clone())?;

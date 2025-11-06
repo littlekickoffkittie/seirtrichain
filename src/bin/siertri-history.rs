@@ -51,7 +51,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         println!("─────────────────────────────────────────");
                         println!("{} | Block #{}", direction, block.header.height);
-                        println!("  🔺 Triangle: {}", &transfer_tx.input_hash[..16.min(transfer_tx.input_hash.len())]);
+                        let hash_hex = hex::encode(transfer_tx.input_hash);
+                        println!("  🔺 Triangle: {}", &hash_hex[..16.min(hash_hex.len())]);
 
                         if is_sender {
                             let to_addr = if transfer_tx.new_owner.len() >= 16 {
@@ -93,7 +94,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         println!("─────────────────────────────────────────");
                         println!("✂️  Subdivision | Block #{}", block.header.height);
-                        println!("  🔺 Parent: {}", &sub_tx.parent_hash[..16.min(sub_tx.parent_hash.len())]);
+                        let hash_hex = hex::encode(sub_tx.parent_hash);
+                        println!("  🔺 Parent: {}", &hash_hex[..16.min(hash_hex.len())]);
                         println!("  👶 Children: {} triangles", sub_tx.children.len());
                         println!("  ⏰ Time: {}", format_timestamp(block.header.timestamp));
                     }

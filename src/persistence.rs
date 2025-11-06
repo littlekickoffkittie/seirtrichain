@@ -1,7 +1,7 @@
 //! Database persistence layer for siertrichain
 
 use rusqlite::{Connection, params};
-use crate::blockchain::{Blockchain, Block, BlockHeader, TriangleState};
+use crate::blockchain::{Blockchain, Block, BlockHeader, TriangleState, Sha256Hash};
 use crate::transaction::Transaction;
 use crate::geometry::Triangle;
 use crate::error::ChainError;
@@ -19,12 +19,12 @@ impl Database {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS blocks (
                 height INTEGER PRIMARY KEY,
-                hash TEXT NOT NULL,
-                previous_hash TEXT NOT NULL,
+                hash BLOB NOT NULL,
+                previous_hash BLOB NOT NULL,
                 timestamp INTEGER NOT NULL,
                 difficulty INTEGER NOT NULL,
                 nonce INTEGER NOT NULL,
-                merkle_root TEXT NOT NULL,
+                merkle_root BLOB NOT NULL,
                 transactions TEXT NOT NULL
             )",
             [],
@@ -32,7 +32,7 @@ impl Database {
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS utxo_set (
-                hash TEXT PRIMARY KEY,
+                hash BLOB PRIMARY KEY,
                 triangle_data TEXT NOT NULL
             )",
             [],
@@ -58,12 +58,12 @@ impl Database {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 block.header.height as i64,
-                block.hash,
-                block.header.previous_hash,
+                block.hash.to_vec(),
+                block.header.previous_hash.to_vec(),
                 block.header.timestamp,
                 block.header.difficulty as i64,
                 block.header.nonce as i64,
-                block.header.merkle_root,
+                block.header.merkle_root.to_vec(),
                 transactions_json,
             ],
         ).map_err(|e| ChainError::DatabaseError(format!("Failed to save block: {}", e)))?;
@@ -85,7 +85,7 @@ impl Database {
 
             tx.execute(
                 "INSERT INTO utxo_set (hash, triangle_data) VALUES (?1, ?2)",
-                params![hash, triangle_json],
+                params![hash.to_vec(), triangle_json],
             ).map_err(|e| ChainError::DatabaseError(format!("Failed to save UTXO: {}", e)))?;
         }
 
@@ -119,12 +119,12 @@ impl Database {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 block.header.height as i64,
-                block.hash,
-                block.header.previous_hash,
+                block.hash.to_vec(),
+                block.header.previous_hash.to_vec(),
                 block.header.timestamp,
                 block.header.difficulty as i64,
                 block.header.nonce as i64,
-                block.header.merkle_root,
+                block.header.merkle_root.to_vec(),
                 transactions_json,
             ],
         ).map_err(|e| ChainError::DatabaseError(format!("Failed to save block: {}", e)))?;
@@ -139,7 +139,7 @@ impl Database {
 
             tx.execute(
                 "INSERT INTO utxo_set (hash, triangle_data) VALUES (?1, ?2)",
-                params![hash, triangle_json],
+                params![hash.to_vec(), triangle_json],
             ).map_err(|e| ChainError::DatabaseError(format!("Failed to save UTXO: {}", e)))?;
         }
 
@@ -171,9 +171,16 @@ impl Database {
             let timestamp: i64 = row.get(3)?;
             let difficulty: i64 = row.get(4)?;
             let nonce: i64 = row.get(5)?;
-            let hash: String = row.get(1)?;
-            let previous_hash: String = row.get(2)?;
-            let merkle_root: String = row.get(6)?;
+            let hash_vec: Vec<u8> = row.get(1)?;
+            let previous_hash_vec: Vec<u8> = row.get(2)?;
+            let merkle_root_vec: Vec<u8> = row.get(6)?;
+
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(&hash_vec);
+            let mut previous_hash = [0u8; 32];
+            previous_hash.copy_from_slice(&previous_hash_vec);
+            let mut merkle_root = [0u8; 32];
+            merkle_root.copy_from_slice(&merkle_root_vec);
 
             Ok(Block {
                 header: BlockHeader {
@@ -195,7 +202,7 @@ impl Database {
         }
 
         if blocks.is_empty() {
-            return Err(ChainError::DatabaseError("No blocks in database".to_string()));
+            return Ok(Blockchain::new());
         }
 
         let mut utxo_set = HashMap::new();
@@ -203,7 +210,9 @@ impl Database {
             .map_err(|e| ChainError::DatabaseError(format!("Failed to prepare UTXO query: {}", e)))?;
 
         let utxo_iter = stmt.query_map([], |row| {
-            let hash: String = row.get(0)?;
+            let hash_vec: Vec<u8> = row.get(0)?;
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(&hash_vec);
             let triangle_json: String = row.get(1)?;
             let triangle: Triangle = serde_json::from_str(&triangle_json)
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
@@ -224,7 +233,7 @@ impl Database {
             }
         ).unwrap_or(2);
 
-        let block_index = blocks.iter().map(|b| (b.hash.clone(), b.clone())).collect();
+        let block_index = blocks.iter().map(|b| (b.hash, b.clone())).collect();
 
         Ok(Blockchain {
             blocks,

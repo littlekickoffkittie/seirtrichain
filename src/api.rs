@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, State},
     routing::{get, post},
-    Json, Router,
+    Json, Router, http::StatusCode, response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -32,6 +32,7 @@ pub async fn run_api_server() {
 
     let app = Router::new()
         .route("/blockchain/height", get(get_blockchain_height))
+        .route("/blockchain/stats", get(get_blockchain_stats))
         .route("/blockchain/block/:hash", get(get_block_by_hash))
         .route("/address/:addr/balance", get(get_address_balance))
         .route("/transaction", post(submit_transaction))
@@ -49,16 +50,56 @@ async fn get_blockchain_height(State(state): State<AppState>) -> Json<u64> {
     Json(blockchain.blocks.len() as u64)
 }
 
-async fn get_block_by_hash(State(state): State<AppState>, Path(hash): Path<String>) -> Json<Option<Block>> {
+async fn get_block_by_hash(State(state): State<AppState>, Path(hash): Path<String>) -> Result<Json<Option<Block>>, Response> {
     let blockchain = state.blockchain.lock().unwrap();
-    let block = blockchain.block_index.get(&hash).cloned();
-    Json(block)
+    let hash_bytes = match hex::decode(hash) {
+        Ok(bytes) => bytes,
+        Err(_) => return Err((StatusCode::BAD_REQUEST, "Invalid hash format").into_response()),
+    };
+    let mut hash_arr = [0u8; 32];
+    if hash_bytes.len() != 32 {
+        return Err((StatusCode::BAD_REQUEST, "Invalid hash length").into_response());
+    }
+    hash_arr.copy_from_slice(&hash_bytes);
+    let block = blockchain.block_index.get(&hash_arr).cloned();
+    Ok(Json(block))
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct BalanceResponse {
     pub triangles: Vec<String>,
     pub total_area: f64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RecentBlock {
+    pub height: u64,
+    pub hash: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct StatsResponse {
+    pub height: u64,
+    pub difficulty: u64,
+    pub utxo_count: usize,
+    pub mempool_size: usize,
+    pub recent_blocks: Vec<RecentBlock>,
+}
+
+async fn get_blockchain_stats(State(state): State<AppState>) -> Json<StatsResponse> {
+    let blockchain = state.blockchain.lock().unwrap();
+    let recent_blocks = blockchain.blocks.iter().rev().take(6).map(|b| RecentBlock {
+        height: b.header.height,
+        hash: hex::encode(b.hash),
+    }).collect();
+
+    Json(StatsResponse {
+        height: blockchain.blocks.len() as u64,
+        difficulty: blockchain.difficulty,
+        utxo_count: blockchain.state.utxo_set.len(),
+        mempool_size: blockchain.mempool.len(),
+        recent_blocks,
+    })
 }
 
 async fn get_address_balance(State(state): State<AppState>, Path(addr): Path<String>) -> Json<BalanceResponse> {
@@ -68,7 +109,7 @@ async fn get_address_balance(State(state): State<AppState>, Path(addr): Path<Str
 
     for (hash, triangle) in &blockchain.state.utxo_set {
         if triangle.owner == addr {
-            triangles.push(hash.clone());
+            triangles.push(hex::encode(hash));
             total_area += triangle.area();
         }
     }
@@ -81,24 +122,33 @@ async fn get_address_balance(State(state): State<AppState>, Path(addr): Path<Str
 
 async fn submit_transaction(State(state): State<AppState>, Json(tx): Json<Transaction>) -> Json<String> {
     let mut blockchain = state.blockchain.lock().unwrap();
-    let tx_hash = tx.hash();
+    let tx_hash = tx.hash_str();
     blockchain.mempool.add_transaction(tx).unwrap();
     Json(tx_hash)
 }
 
-async fn get_transaction_status(State(state): State<AppState>, Path(hash): Path<String>) -> Json<Option<Transaction>> {
+async fn get_transaction_status(State(state): State<AppState>, Path(hash): Path<String>) -> Result<Json<Option<Transaction>>, Response> {
     let blockchain = state.blockchain.lock().unwrap();
-    if let Some(tx) = blockchain.mempool.get_transaction(&hash).cloned() {
-        return Json(Some(tx));
+    let hash_bytes = match hex::decode(hash) {
+        Ok(bytes) => bytes,
+        Err(_) => return Err((StatusCode::BAD_REQUEST, "Invalid hash format").into_response()),
+    };
+    let mut hash_arr = [0u8; 32];
+    if hash_bytes.len() != 32 {
+        return Err((StatusCode::BAD_REQUEST, "Invalid hash length").into_response());
+    }
+    hash_arr.copy_from_slice(&hash_bytes);
+    if let Some(tx) = blockchain.mempool.get_transaction(&hash_arr).cloned() {
+        return Ok(Json(Some(tx)));
     }
 
     for block in &blockchain.blocks {
-        if let Some(tx) = block.transactions.iter().find(|tx| tx.hash() == hash) {
-            return Json(Some(tx.clone()));
+        if let Some(tx) = block.transactions.iter().find(|tx| tx.hash() == hash_arr) {
+            return Ok(Json(Some(tx.clone())));
         }
     }
 
-    Json(None)
+    Ok(Json(None))
 }
 
 #[cfg(test)]
@@ -106,6 +156,7 @@ mod tests {
     use super::*;
     use axum::http::StatusCode;
     use axum_test::TestServer;
+    use crate::blockchain::Sha256Hash;
 
     fn test_app() -> Router {
         let blockchain = Blockchain::new();
@@ -138,7 +189,7 @@ mod tests {
         assert_eq!(response.status_code(), StatusCode::OK);
         let block: Option<Block> = response.json();
         assert!(block.is_some());
-        assert_eq!(block.unwrap().hash, genesis_hash);
+        assert_eq!(block.unwrap().hash, [0; 32]);
     }
 
     use crate::transaction::SubdivisionTx;
@@ -158,12 +209,13 @@ mod tests {
     #[tokio::test]
     async fn test_submit_and_get_transaction() {
         let server = TestServer::new(test_app()).unwrap();
-        let blockchain = Blockchain::new();
+        let mut blockchain = Blockchain::new();
         let genesis = blockchain.blocks[0].clone();
         let keypair = KeyPair::generate().unwrap();
         let address = keypair.address();
+        let parent_hash = *blockchain.state.utxo_set.keys().next().unwrap();
         let children = blockchain.state.utxo_set.values().next().unwrap().subdivide();
-        let mut tx = SubdivisionTx::new(blockchain.state.utxo_set.keys().next().unwrap().clone(), children.to_vec(), address, 0, 1);
+        let mut tx = SubdivisionTx::new(parent_hash, children.to_vec(), address, 0, 1);
         let message = tx.signable_message();
         let signature = keypair.sign(&message).unwrap();
         let public_key = keypair.public_key.serialize().to_vec();

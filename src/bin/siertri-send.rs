@@ -45,16 +45,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::open("siertrichain.db")?;
     let mut chain = db.load_blockchain()?;
 
-    let full_hash = chain.state.utxo_set.keys()
-        .find(|h| h.starts_with(triangle_hash))
-        .ok_or_else(|| format!("Triangle with hash prefix {} not found", triangle_hash))?
-        .clone();
+    let full_hash = *chain.state.utxo_set.keys()
+        .find(|h| hex::encode(h).starts_with(triangle_hash))
+        .ok_or_else(|| format!("Triangle with hash prefix {} not found", triangle_hash))?;
 
     let triangle = chain.state.utxo_set.get(&full_hash)
         .ok_or("Triangle not found in UTXO set")?
         .clone();
 
-    let full_hash_prefix = if full_hash.len() >= 16 { &full_hash[..16] } else { &full_hash };
+    let full_hash_hex = hex::encode(full_hash);
+    let full_hash_prefix = &full_hash_hex[..16];
     let from_prefix = if from_address.len() >= 16 { &from_address[..16] } else { &from_address };
     let to_prefix = if to_address.len() >= 16 { &to_address[..16] } else { to_address };
 
@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
 
-    let mut tx = TransferTx::new(full_hash.clone(), to_address.to_string(), from_address.clone(), 0, chain.blocks.len() as u64);
+    let mut tx = TransferTx::new(full_hash, to_address.to_string(), from_address.clone(), 0, chain.blocks.len() as u64);
 
     // Add memo if provided
     if let Some(m) = memo {
@@ -95,14 +95,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("Blockchain is empty")?;
     let mut new_block = siertrichain::blockchain::Block::new(
         last_block.header.height + 1,
-        last_block.hash.clone(),
+        last_block.hash,
         chain.difficulty,
         transactions,
     );
 
     new_block = mine_block(new_block)?;
 
-    let new_hash_prefix = if new_block.hash.len() >= 16 { &new_block.hash[..16] } else { &new_block.hash };
+    let new_hash_hex = hex::encode(new_block.hash);
+    let new_hash_prefix = &new_hash_hex[..16];
     println!("✅ Block mined! Hash: {}", new_hash_prefix);
 
     chain.apply_block(new_block.clone())?;
