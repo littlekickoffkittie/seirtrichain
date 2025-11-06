@@ -32,6 +32,7 @@ pub async fn run_api_server() {
 
     let app = Router::new()
         .route("/blockchain/height", get(get_blockchain_height))
+        .route("/blockchain/stats", get(get_blockchain_stats))
         .route("/blockchain/block/:hash", get(get_block_by_hash))
         .route("/address/:addr/balance", get(get_address_balance))
         .route("/transaction", post(submit_transaction))
@@ -68,6 +69,37 @@ async fn get_block_by_hash(State(state): State<AppState>, Path(hash): Path<Strin
 pub struct BalanceResponse {
     pub triangles: Vec<String>,
     pub total_area: f64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RecentBlock {
+    pub height: u64,
+    pub hash: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct StatsResponse {
+    pub height: u64,
+    pub difficulty: u64,
+    pub utxo_count: usize,
+    pub mempool_size: usize,
+    pub recent_blocks: Vec<RecentBlock>,
+}
+
+async fn get_blockchain_stats(State(state): State<AppState>) -> Json<StatsResponse> {
+    let blockchain = state.blockchain.lock().unwrap();
+    let recent_blocks = blockchain.blocks.iter().rev().take(6).map(|b| RecentBlock {
+        height: b.header.height,
+        hash: hex::encode(b.hash),
+    }).collect();
+
+    Json(StatsResponse {
+        height: blockchain.blocks.len() as u64,
+        difficulty: blockchain.difficulty,
+        utxo_count: blockchain.state.utxo_set.len(),
+        mempool_size: blockchain.mempool.len(),
+        recent_blocks,
+    })
 }
 
 async fn get_address_balance(State(state): State<AppState>, Path(addr): Path<String>) -> Json<BalanceResponse> {
