@@ -11,6 +11,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::blockchain::{Blockchain, Block};
 use crate::persistence::Database;
 use crate::transaction::Transaction;
+use crate::crypto::KeyPair;
 
 #[derive(Clone)]
 struct AppState {
@@ -31,12 +32,30 @@ pub async fn run_api_server() {
         .allow_headers(Any);
 
     let app = Router::new()
+        // Blockchain endpoints
         .route("/blockchain/height", get(get_blockchain_height))
         .route("/blockchain/stats", get(get_blockchain_stats))
+        .route("/blockchain/blocks", get(get_recent_blocks))
         .route("/blockchain/block/:hash", get(get_block_by_hash))
+        .route("/blockchain/block/by-height/:height", get(get_block_by_height))
+        // Address & Balance
         .route("/address/:addr/balance", get(get_address_balance))
+        .route("/address/:addr/triangles", get(get_address_triangles))
+        .route("/address/:addr/history", get(get_address_history))
+        // Transactions
         .route("/transaction", post(submit_transaction))
         .route("/transaction/:hash", get(get_transaction_status))
+        .route("/transactions/pending", get(get_pending_transactions))
+        // Wallet
+        .route("/wallet/create", post(create_wallet))
+        .route("/wallet/import", post(import_wallet))
+        // Mining
+        .route("/mining/status", get(get_mining_status))
+        .route("/mining/start", post(start_mining))
+        .route("/mining/stop", post(stop_mining))
+        // Network
+        .route("/network/peers", get(get_peers))
+        .route("/network/info", get(get_network_info))
         .with_state(app_state)
         .layer(cors);
 
@@ -149,6 +168,190 @@ async fn get_transaction_status(State(state): State<AppState>, Path(hash): Path<
     }
 
     Ok(Json(None))
+}
+
+// New endpoints
+
+async fn get_recent_blocks(State(state): State<AppState>) -> Json<Vec<RecentBlock>> {
+    let blockchain = state.blockchain.lock().unwrap();
+    let blocks = blockchain.blocks.iter().rev().take(20).map(|b| RecentBlock {
+        height: b.header.height,
+        hash: hex::encode(b.hash),
+    }).collect();
+    Json(blocks)
+}
+
+async fn get_block_by_height(State(state): State<AppState>, Path(height): Path<u64>) -> Result<Json<Option<Block>>, Response> {
+    let blockchain = state.blockchain.lock().unwrap();
+    let block = blockchain.blocks.iter().find(|b| b.header.height == height).cloned();
+    Ok(Json(block))
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct TriangleInfo {
+    pub hash: String,
+    pub area: f64,
+    pub vertices: Vec<(f64, f64)>,
+}
+
+async fn get_address_triangles(State(state): State<AppState>, Path(addr): Path<String>) -> Json<Vec<TriangleInfo>> {
+    let blockchain = state.blockchain.lock().unwrap();
+    let triangles: Vec<TriangleInfo> = blockchain.state.utxo_set.iter()
+        .filter(|(_, triangle)| triangle.owner == addr)
+        .map(|(hash, triangle)| TriangleInfo {
+            hash: hex::encode(hash),
+            area: triangle.area(),
+            vertices: vec![
+                (triangle.a.x, triangle.a.y),
+                (triangle.b.x, triangle.b.y),
+                (triangle.c.x, triangle.c.y),
+            ],
+        })
+        .collect();
+    Json(triangles)
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct TransactionHistory {
+    pub tx_hash: String,
+    pub block_height: u64,
+    pub timestamp: i64,
+    pub tx_type: String,
+}
+
+async fn get_address_history(State(state): State<AppState>, Path(addr): Path<String>) -> Json<Vec<TransactionHistory>> {
+    let blockchain = state.blockchain.lock().unwrap();
+    let mut history = Vec::new();
+
+    for block in &blockchain.blocks {
+        for tx in &block.transactions {
+            let involves_address = match tx {
+                Transaction::Subdivision(tx) => tx.owner_address == addr,
+                Transaction::Transfer(tx) => tx.sender == addr || tx.new_owner == addr,
+                Transaction::Coinbase(tx) => tx.beneficiary_address == addr,
+            };
+
+            if involves_address {
+                history.push(TransactionHistory {
+                    tx_hash: tx.hash_str(),
+                    block_height: block.header.height,
+                    timestamp: block.header.timestamp,
+                    tx_type: match tx {
+                        Transaction::Subdivision(_) => "Subdivision".to_string(),
+                        Transaction::Transfer(_) => "Transfer".to_string(),
+                        Transaction::Coinbase(_) => "Coinbase".to_string(),
+                    },
+                });
+            }
+        }
+    }
+
+    Json(history)
+}
+
+async fn get_pending_transactions(State(state): State<AppState>) -> Json<Vec<Transaction>> {
+    let blockchain = state.blockchain.lock().unwrap();
+    Json(blockchain.mempool.get_all_transactions())
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct WalletResponse {
+    pub address: String,
+    pub public_key: String,
+    pub private_key: String,
+}
+
+async fn create_wallet() -> Result<Json<WalletResponse>, Response> {
+    match KeyPair::generate() {
+        Ok(keypair) => {
+            let address = keypair.address();
+            let public_key = hex::encode(keypair.public_key.serialize());
+            let private_key = hex::encode(keypair.secret_key.secret_bytes());
+
+            Ok(Json(WalletResponse {
+                address,
+                public_key,
+                private_key,
+            }))
+        }
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to generate keypair: {}", e)).into_response()),
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ImportWalletRequest {
+    pub private_key: String,
+}
+
+async fn import_wallet(Json(req): Json<ImportWalletRequest>) -> Result<Json<WalletResponse>, Response> {
+    let private_key_bytes = match hex::decode(&req.private_key) {
+        Ok(bytes) => bytes,
+        Err(_) => return Err((StatusCode::BAD_REQUEST, "Invalid private key format").into_response()),
+    };
+
+    match KeyPair::from_secret_bytes(&private_key_bytes) {
+        Ok(keypair) => {
+            let address = keypair.address();
+            let public_key = hex::encode(keypair.public_key.serialize());
+
+            Ok(Json(WalletResponse {
+                address,
+                public_key,
+                private_key: req.private_key,
+            }))
+        }
+        Err(e) => Err((StatusCode::BAD_REQUEST, format!("Invalid private key: {}", e)).into_response()),
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct MiningStatus {
+    pub is_mining: bool,
+    pub blocks_mined: u64,
+    pub hashrate: f64,
+}
+
+async fn get_mining_status(State(_state): State<AppState>) -> Json<MiningStatus> {
+    // Placeholder - would need mining state
+    Json(MiningStatus {
+        is_mining: false,
+        blocks_mined: 0,
+        hashrate: 0.0,
+    })
+}
+
+async fn start_mining(State(_state): State<AppState>) -> Json<String> {
+    Json("Mining started (not implemented in API yet)".to_string())
+}
+
+async fn stop_mining(State(_state): State<AppState>) -> Json<String> {
+    Json("Mining stopped".to_string())
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PeerInfo {
+    pub address: String,
+    pub last_seen: i64,
+}
+
+async fn get_peers(State(_state): State<AppState>) -> Json<Vec<PeerInfo>> {
+    // Placeholder - would need network state
+    Json(vec![])
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct NetworkInfo {
+    pub peers_count: usize,
+    pub node_id: String,
+    pub listening_port: u16,
+}
+
+async fn get_network_info(State(_state): State<AppState>) -> Json<NetworkInfo> {
+    Json(NetworkInfo {
+        peers_count: 0,
+        node_id: "local-node".to_string(),
+        listening_port: 8333,
+    })
 }
 
 #[cfg(test)]
