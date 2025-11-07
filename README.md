@@ -107,6 +107,9 @@ cargo run --bin siertri-mine-block
 
 # Run continuous mining
 cargo run --bin siertri-miner
+
+# Run miner on a loop
+while true; do cargo run --bin siertri-mine-block 2>&1 | grep -v 'Finished' | grep -v 'Running'; done
 ```
 
 Mining process:
