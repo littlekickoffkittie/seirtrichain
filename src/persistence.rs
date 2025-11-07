@@ -1,7 +1,7 @@
 //! Database persistence layer for siertrichain
 
 use rusqlite::{Connection, params};
-use crate::blockchain::{Blockchain, Block, BlockHeader, TriangleState, Sha256Hash};
+use crate::blockchain::{Blockchain, Block, BlockHeader, TriangleState, Mempool};
 use crate::transaction::Transaction;
 use crate::geometry::Triangle;
 use crate::error::ChainError;
@@ -93,6 +93,34 @@ impl Database {
             .map_err(|e| ChainError::DatabaseError(format!("Failed to commit transaction: {}", e)))?;
 
         Ok(())
+    }
+
+    pub fn load_utxo_set(&self) -> Result<TriangleState, ChainError> {
+        let mut utxo_set = HashMap::new();
+
+        let mut stmt = self.conn.prepare("SELECT hash, triangle_data FROM utxo_set")
+            .map_err(|e| ChainError::DatabaseError(format!("Failed to prepare query: {}", e)))?;
+
+        let rows = stmt.query_map([], |row| {
+            let hash_bytes: Vec<u8> = row.get(0)?;
+            let triangle_json: String = row.get(1)?;
+            Ok((hash_bytes, triangle_json))
+        }).map_err(|e| ChainError::DatabaseError(format!("Failed to query UTXO set: {}", e)))?;
+
+        for row_result in rows {
+            let (hash_bytes, triangle_json) = row_result
+                .map_err(|e| ChainError::DatabaseError(format!("Failed to read row: {}", e)))?;
+
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(&hash_bytes);
+
+            let triangle: Triangle = serde_json::from_str(&triangle_json)
+                .map_err(|e| ChainError::DatabaseError(format!("Failed to deserialize triangle: {}", e)))?;
+
+            utxo_set.insert(hash, triangle);
+        }
+
+        Ok(TriangleState { utxo_set })
     }
 
     pub fn save_difficulty(&self, difficulty: u64) -> Result<(), ChainError> {
@@ -235,12 +263,15 @@ impl Database {
 
         let block_index = blocks.iter().map(|b| (b.hash, b.clone())).collect();
 
+        let state = self.load_utxo_set()?;
+        let mempool = Mempool::new();
         Ok(Blockchain {
             blocks,
             block_index,
-            state: TriangleState { utxo_set },
+            forks: std::collections::HashMap::new(),
+            state,
             difficulty,
-            mempool: crate::blockchain::Mempool::new(),
+            mempool,
         })
     }
 }

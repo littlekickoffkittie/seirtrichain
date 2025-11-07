@@ -1,6 +1,6 @@
 //! Address book management tool
 
-use siertrichain::addressbook::{self, AddressBook};
+use siertrichain::addressbook::{self};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();

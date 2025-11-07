@@ -115,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn format_timestamp(timestamp: i64) -> String {
-    use chrono::{DateTime, Utc};
+    use chrono::DateTime;
 
     if let Some(dt) = DateTime::from_timestamp(timestamp, 0) {
         dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()

@@ -3,6 +3,9 @@
 //! Provides functionality for creating, loading, and managing wallets
 //! that store keypairs and track triangle ownership.
 
+// Suppress deprecation warnings from aes-gcm's generic-array dependency
+#![allow(deprecated)]
+
 use crate::crypto::KeyPair;
 use crate::error::ChainError;
 use std::fs;
@@ -194,7 +197,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use argon2::{Argon2, PasswordHasher};
-use argon2::password_hash::{SaltString, PasswordHash};
+use argon2::password_hash::{SaltString};
 
 /// Encrypted wallet structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,7 +243,7 @@ impl EncryptedWallet {
         // Encrypt the secret key
         let secret_bytes = wallet.secret_key_hex.as_bytes();
         let ciphertext = cipher
-            .encrypt(nonce, secret_bytes)
+            .encrypt(&nonce, secret_bytes)
             .map_err(|e| ChainError::CryptoError(format!("Encryption failed: {}", e)))?;
 
         use base64::{Engine as _, engine::general_purpose};
@@ -257,7 +260,7 @@ impl EncryptedWallet {
 
     /// Decrypt the wallet using a password
     pub fn decrypt(&self, password: &str) -> Result<Wallet, ChainError> {
-        use argon2::PasswordVerifier;
+
 
         // Parse the stored salt
         let salt = SaltString::from_b64(&self.salt)
@@ -289,7 +292,7 @@ impl EncryptedWallet {
 
         // Decrypt
         let plaintext = cipher
-            .decrypt(nonce, ciphertext.as_ref())
+            .decrypt(&nonce, ciphertext.as_ref())
             .map_err(|_| ChainError::CryptoError("Decryption failed - wrong password?".to_string()))?;
 
         let secret_key_hex = String::from_utf8(plaintext)

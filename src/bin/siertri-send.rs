@@ -1,13 +1,15 @@
 //! Send triangles to another address
 
 use siertrichain::persistence::Database;
-use siertrichain::transaction::{Transaction, TransferTx, CoinbaseTx};
+use siertrichain::transaction::{Transaction, TransferTx};
 use siertrichain::crypto::KeyPair;
-use siertrichain::miner::mine_block;
+use siertrichain::network::NetworkNode;
 use secp256k1::SecretKey;
+use std::env;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = env::args().collect();
 
     if args.len() < 3 {
         println!("Usage: siertri-send <to_address> <triangle_hash> [memo]");
@@ -69,7 +71,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut tx = TransferTx::new(full_hash, to_address.to_string(), from_address.clone(), 0, chain.blocks.len() as u64);
 
-    // Add memo if provided
     if let Some(m) = memo {
         tx = tx.with_memo(m)?;
     }
@@ -79,40 +80,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let public_key = keypair.public_key.serialize().to_vec();
     tx.sign(signature, public_key);
 
-    let coinbase = CoinbaseTx {
-        reward_area: 1000,
-        beneficiary_address: from_address.clone()
-    };
+    let transaction = Transaction::Transfer(tx);
+    chain.mempool.add_transaction(transaction.clone())?;
 
-    let transactions = vec![
-        Transaction::Coinbase(coinbase),
-        Transaction::Transfer(tx),
-    ];
+    let network_node = NetworkNode::new(chain, "siertrichain.db".to_string());
+    network_node.broadcast_transaction(&transaction).await?;
 
-    println!("⛏️  Mining transaction into block...");
-
-    let last_block = chain.blocks.last()
-        .ok_or("Blockchain is empty")?;
-    let mut new_block = siertrichain::blockchain::Block::new(
-        last_block.header.height + 1,
-        last_block.hash,
-        chain.difficulty,
-        transactions,
-    );
-
-    new_block = mine_block(new_block)?;
-
-    let new_hash_hex = hex::encode(new_block.hash);
-    let new_hash_prefix = &new_hash_hex[..16];
-    println!("✅ Block mined! Hash: {}", new_hash_prefix);
-
-    chain.apply_block(new_block.clone())?;
-
-    db.save_block(&new_block)?;
-    db.save_utxo_set(&chain.state)?;
-
-    println!("\n🎉 Transfer complete!");
-    println!("   Block: {}", chain.blocks.len() - 1);
+    println!("\n🎉 Transaction broadcasted to the network!");
 
     Ok(())
 }

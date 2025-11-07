@@ -101,6 +101,19 @@ pub struct BlockHeader {
     pub merkle_root: Sha256Hash,
 }
 
+impl BlockHeader {
+    pub fn calculate_hash(&self) -> Sha256Hash {
+        let mut hasher = Sha256::new();
+        hasher.update(self.height.to_le_bytes());
+        hasher.update(self.previous_hash);
+        hasher.update(self.timestamp.to_le_bytes());
+        hasher.update(self.difficulty.to_le_bytes());
+        hasher.update(self.nonce.to_le_bytes());
+        hasher.update(self.merkle_root);
+        hasher.finalize().into()
+    }
+}
+
 /// A block in the blockchain
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Block {
@@ -368,6 +381,7 @@ impl Mempool {
 pub struct Blockchain {
     pub blocks: Vec<Block>,
     pub block_index: HashMap<Sha256Hash, Block>,
+    pub forks: HashMap<Sha256Hash, Block>,
     pub state: TriangleState,
     pub difficulty: u64,
     pub mempool: Mempool,
@@ -402,6 +416,7 @@ impl Blockchain {
         Blockchain {
             blocks: vec![genesis_block],
             block_index,
+            forks: HashMap::new(),
             state,
             difficulty: 2,
             mempool: Mempool::new(),
@@ -409,17 +424,13 @@ impl Blockchain {
     }
 
     pub fn validate_block(&self, block: &Block) -> Result<(), ChainError> {
-        if self.blocks.is_empty() {
+        if !self.block_index.contains_key(&block.header.previous_hash) {
             return Err(ChainError::InvalidBlockLinkage);
         }
 
-        let last_block = self.blocks.last().unwrap();
+        let parent_block = self.block_index.get(&block.header.previous_hash).unwrap();
 
-        if block.header.height != last_block.header.height + 1 {
-            return Err(ChainError::InvalidBlockLinkage);
-        }
-
-        if block.header.previous_hash != last_block.hash {
+        if block.header.height != parent_block.header.height + 1 {
             return Err(ChainError::InvalidBlockLinkage);
         }
 
@@ -483,42 +494,70 @@ impl Blockchain {
     pub fn apply_block(&mut self, valid_block: Block) -> Result<(), ChainError> {
         self.validate_block(&valid_block)?;
 
-        // Collect transaction hashes before applying
-        let tx_hashes: Vec<Sha256Hash> = valid_block.transactions.iter()
-            .map(|tx| tx.hash())
-            .collect();
+        let parent_hash = valid_block.header.previous_hash;
+        let last_block_hash = self.blocks.last().unwrap().hash;
 
-        for tx in valid_block.transactions.iter() {
-            match tx {
-                Transaction::Subdivision(sub_tx) => {
-                    self.state.apply_subdivision(sub_tx)?;
-                },
-                Transaction::Coinbase(cb_tx) => {
-                    self.state.apply_coinbase(cb_tx, valid_block.header.height)?;
-                },
-                Transaction::Transfer(tx) => {
-                    // Get a mutable reference to the triangle in the UTXO set
-                    let triangle = self.state.utxo_set.get_mut(&tx.input_hash)
-                        .ok_or_else(|| ChainError::TriangleNotFound(
-                            format!("Transfer input {} missing from UTXO set", hex::encode(tx.input_hash))
-                        ))?;
+        // Case 1: The new block extends the main chain
+        if parent_hash == last_block_hash {
+            // Collect transaction hashes before applying
+            let tx_hashes: Vec<Sha256Hash> = valid_block.transactions.iter()
+                .map(|tx| tx.hash())
+                .collect();
 
-                    // Simply update the owner. The hash (key) remains the same because it is
-                    // based on geometry, not ownership.
-                    triangle.owner = tx.new_owner.clone();
+            for tx in valid_block.transactions.iter() {
+                match tx {
+                    Transaction::Subdivision(sub_tx) => {
+                        self.state.apply_subdivision(sub_tx)?;
+                    },
+                    Transaction::Coinbase(cb_tx) => {
+                        self.state.apply_coinbase(cb_tx, valid_block.header.height)?;
+                    },
+                    Transaction::Transfer(tx) => {
+                        let triangle = self.state.utxo_set.get_mut(&tx.input_hash)
+                            .ok_or_else(|| ChainError::TriangleNotFound(
+                                format!("Transfer input {} missing from UTXO set", hex::encode(tx.input_hash))
+                            ))?;
+                        triangle.owner = tx.new_owner.clone();
+                    }
                 }
             }
+
+            self.blocks.push(valid_block.clone());
+            self.block_index.insert(valid_block.hash, valid_block);
+            self.adjust_difficulty();
+
+            self.mempool.remove_transactions(&tx_hashes);
+            self.mempool.validate_and_prune(&self.state);
+
+        } else if self.block_index.contains_key(&parent_hash) {
+            // Case 2: The new block creates a fork
+            println!("🍴 Fork detected at height {}", valid_block.header.height);
+            self.forks.insert(valid_block.hash, valid_block.clone());
+
+            // Check if the fork is longer than the main chain
+            let mut fork_chain = vec![valid_block.clone()];
+            let mut current_hash = valid_block.header.previous_hash;
+            while let Some(block) = self.forks.get(&current_hash) {
+                fork_chain.push(block.clone());
+                current_hash = block.header.previous_hash;
+            }
+
+            if fork_chain.len() > self.blocks.len() {
+                println!("Switching to a longer fork");
+                // Reorganize the chain
+                let mut new_blocks = Vec::new();
+                let mut current_block = valid_block;
+                while let Some(block) = self.block_index.get(&current_block.header.previous_hash) {
+                    new_blocks.push(current_block);
+                    current_block = block.clone();
+                }
+                new_blocks.reverse();
+                self.blocks = new_blocks;
+            }
+        } else {
+            // Case 3: Orphan block
+            return Err(ChainError::OrphanBlock);
         }
-
-        self.blocks.push(valid_block.clone());
-        self.block_index.insert(valid_block.hash, valid_block);
-        self.adjust_difficulty();
-
-        // Remove confirmed transactions from mempool
-        self.mempool.remove_transactions(&tx_hashes);
-
-        // Prune any now-invalid transactions from mempool
-        self.mempool.validate_and_prune(&self.state);
 
         Ok(())
     }
