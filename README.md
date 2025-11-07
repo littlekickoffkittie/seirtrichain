@@ -51,8 +51,8 @@ Each triangle has:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/siertrichain.git
-cd siertrichain
+git clone https://github.com/littlekickoffkittie/seirtrichain.git
+cd seirtrichain
 
 # Build the project
 cargo build --release
@@ -243,9 +243,9 @@ Environment variables:
 # Wallet location
 HOME=~/.siertrichain
 
-# Optional: AI validation (experimental)
-DEEPSEEK_API_KEY=your_key_here
-GEMINI_API_KEY=your_key_here
+# Optional: AI validation (experimental) - leave blank if not using
+# DEEPSEEK_API_KEY=sk-your-key-here
+# GEMINI_API_KEY=your-gemini-key-here
 ```
 
 ## Development Status
@@ -474,8 +474,8 @@ A: Copy `~/.siertrichain/wallet.json` to a secure location. Wallet encryption co
 ## Resources
 
 - **Documentation**: [PROJECT_STATUS.md](PROJECT_STATUS.md)
-- **Source Code**: [GitHub](https://github.com/yourusername/siertrichain)
-- **Issue Tracker**: [GitHub Issues](https://github.com/yourusername/siertrichain/issues)
+- **Source Code**: [GitHub](https://github.com/littlekickoffkittie/seirtrichain)
+- **Issue Tracker**: [GitHub Issues](https://github.com/littlekickoffkittie/seirtrichain/issues)
 - **Sierpinski Triangle**: [Wikipedia](https://en.wikipedia.org/wiki/Sierpi%C5%84ski_triangle)
 
 ## License
@@ -497,7 +497,7 @@ Built with Rust 🦀
 
 Found a bug? Have a question?
 
-- Open an [issue](https://github.com/yourusername/siertrichain/issues)
+- Open an [issue](https://github.com/littlekickoffkittie/seirtrichain/issues)
 - Read the [docs](PROJECT_STATUS.md)
 - Check existing [tests](src/) for examples
 
