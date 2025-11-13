@@ -1,4 +1,4 @@
-//! Send triangles to another address
+//! Send triangles to another address - Beautiful edition!
 
 use siertrichain::persistence::Database;
 use siertrichain::transaction::{Transaction, TransferTx};
@@ -6,18 +6,45 @@ use siertrichain::crypto::KeyPair;
 use siertrichain::network::NetworkNode;
 use secp256k1::SecretKey;
 use std::env;
+use colored::*;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::time::Duration;
+
+const LOGO: &str = r#"
+╔═══════════════════════════════════════════════════════════════╗
+║         ███████╗██╗███████╗██████╗ ████████╗██████╗ ██╗      ║
+║         ██╔════╝██║██╔════╝██╔══██╗╚══██╔══╝██╔══██╗██║      ║
+║         ███████╗██║█████╗  ██████╔╝   ██║   ██████╔╝██║      ║
+║         ╚════██║██║██╔══╝  ██╔══██╗   ██║   ██╔══██╗██║      ║
+║         ███████║██║███████╗██║  ██║   ██║   ██║  ██║██║      ║
+║         ╚══════╝╚═╝╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝      ║
+║              🔺 Fractal Blockchain Transfer 🔺                ║
+╚═══════════════════════════════════════════════════════════════╝
+"#;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 3 {
-        println!("Usage: siertri-send <to_address> <triangle_hash> [memo]");
-        println!("\nExamples:");
-        println!("  siertri-send abc123... def456...");
-        println!("  siertri-send abc123... def456... \"Payment for services\"");
+        println!("{}", LOGO.bright_cyan());
+        println!("{}", "╔══════════════════════════════════════════════════════════╗".bright_yellow());
+        println!("{}", "║                      📖 Usage Guide                      ║".bright_yellow().bold());
+        println!("{}", "╠══════════════════════════════════════════════════════════╣".bright_yellow());
+        println!("{}", "║                                                          ║".bright_yellow());
+        println!("{}", "║  Usage:                                                  ║".bright_yellow());
+        println!("{}", "║    send <to_address> <triangle_hash> [memo]              ║".white());
+        println!("{}", "║                                                          ║".bright_yellow());
+        println!("{}", "║  Examples:                                               ║".bright_yellow());
+        println!("{}", "║    send abc123... def456...                              ║".white());
+        println!("{}", "║    send abc123... def456... \"Payment for services\"      ║".white());
+        println!("{}", "║                                                          ║".bright_yellow());
+        println!("{}", "╚══════════════════════════════════════════════════════════╝".bright_yellow());
+        println!();
         std::process::exit(1);
     }
+
+    println!("{}", LOGO.bright_cyan());
 
     let to_address = &args[1];
     let triangle_hash = &args[2];
@@ -27,7 +54,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    println!("💸 Sending triangle...\n");
+    println!("{}", "┌─────────────────────────────────────────────────────────────┐".bright_magenta());
+    println!("{}", "│                  💸 INITIATING TRANSFER                     │".bright_magenta().bold());
+    println!("{}", "└─────────────────────────────────────────────────────────────┘".bright_magenta());
+    println!();
+
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+            .template("{spinner:.cyan} {msg}")
+            .unwrap()
+    );
+
+    pb.set_message("Loading wallet...");
+    pb.enable_steady_tick(Duration::from_millis(100));
 
     let home = std::env::var("HOME")?;
     let wallet_file = format!("{}/.siertrichain/wallet.json", home);
@@ -44,8 +85,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let secret_key = SecretKey::from_slice(&secret_bytes)?;
     let keypair = KeyPair::from_secret_key(secret_key);
 
+    pb.set_message("Loading blockchain...");
+
     let db = Database::open("siertrichain.db")?;
     let mut chain = db.load_blockchain()?;
+
+    pb.set_message("Looking up triangle...");
 
     let full_hash = *chain.state.utxo_set.keys()
         .find(|h| hex::encode(h).starts_with(triangle_hash))
@@ -55,25 +100,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("Triangle not found in UTXO set")?
         .clone();
 
-    let full_hash_hex = hex::encode(full_hash);
-    let full_hash_prefix = &full_hash_hex[..16];
-    let from_prefix = if from_address.len() >= 16 { &from_address[..16] } else { &from_address };
-    let to_prefix = if to_address.len() >= 16 { &to_address[..16] } else { to_address };
+    pb.finish_and_clear();
 
-    println!("🔺 Triangle: {}", full_hash_prefix);
-    println!("   Area: {:.6}", triangle.area());
-    println!("   From: {}...", from_prefix);
-    println!("   To: {}...", to_prefix);
+    let full_hash_hex = hex::encode(full_hash);
+    let full_hash_display = if full_hash_hex.len() > 20 {
+        format!("{}...{}", &full_hash_hex[..10], &full_hash_hex[full_hash_hex.len()-10..])
+    } else {
+        full_hash_hex.clone()
+    };
+    let from_display = if from_address.len() > 20 {
+        format!("{}...{}", &from_address[..10], &from_address[from_address.len()-10..])
+    } else {
+        from_address.clone()
+    };
+    let to_display = if to_address.len() > 20 {
+        format!("{}...{}", &to_address[..10], &to_address[to_address.len()-10..])
+    } else {
+        to_address.to_string()
+    };
+
+    println!("{}", "╔══════════════════════════════════════════════════════════╗".bright_cyan());
+    println!("{}", "║              🔍 TRANSACTION DETAILS                      ║".bright_cyan().bold());
+    println!("{}", "╠══════════════════════════════════════════════════════════╣".bright_cyan());
+    println!("{}", format!("║  🔺 Triangle: {:<42} ║", full_hash_display).cyan());
+    println!("{}", format!("║  📐 Area: {:<47.6} ║", triangle.area()).cyan());
+    println!("{}", format!("║  👤 From: {:<47} ║", from_display).cyan());
+    println!("{}", format!("║  🎯 To: {:<49} ║", to_display).cyan());
     if let Some(ref m) = memo {
-        println!("   📝 Memo: {}", m);
+        let memo_display = if m.len() > 45 {
+            format!("{}...", &m[..42])
+        } else {
+            m.clone()
+        };
+        println!("{}", format!("║  📝 Memo: {:<47} ║", memo_display).cyan());
     }
+    println!("{}", "╚══════════════════════════════════════════════════════════╝".bright_cyan());
     println!();
+
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+            .template("{spinner:.green} {msg}")
+            .unwrap()
+    );
+    pb.enable_steady_tick(Duration::from_millis(100));
+
+    pb.set_message("Creating transaction...");
 
     let mut tx = TransferTx::new(full_hash, to_address.to_string(), from_address.clone(), 0, chain.blocks.len() as u64);
 
     if let Some(m) = memo {
         tx = tx.with_memo(m)?;
     }
+
+    pb.set_message("Signing transaction...");
 
     let message = tx.signable_message();
     let signature = keypair.sign(&message)?;
@@ -83,10 +164,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let transaction = Transaction::Transfer(tx);
     chain.mempool.add_transaction(transaction.clone())?;
 
+    pb.set_message("Broadcasting to network...");
+
     let network_node = NetworkNode::new(chain, "siertrichain.db".to_string());
     network_node.broadcast_transaction(&transaction).await?;
 
-    println!("\n🎉 Transaction broadcasted to the network!");
+    pb.finish_and_clear();
+
+    println!("{}", "╔══════════════════════════════════════════════════════════╗".bright_green());
+    println!("{}", "║              ✅ TRANSACTION SUCCESSFUL!                  ║".bright_green().bold());
+    println!("{}", "╠══════════════════════════════════════════════════════════╣".bright_green());
+    println!("{}", "║  Your transaction has been broadcasted to the network   ║".green());
+    println!("{}", "║  and will be included in the next block!                ║".green());
+    println!("{}", "╚══════════════════════════════════════════════════════════╝".bright_green());
+    println!();
+    println!("{}", "🎉 Transfer complete! The triangle is on its way!".bright_blue());
+    println!();
 
     Ok(())
 }

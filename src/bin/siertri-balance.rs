@@ -1,13 +1,38 @@
-//! Check wallet balance
+//! Check wallet balance - Beautiful edition!
 
 use siertrichain::persistence::Database;
+use colored::*;
+use comfy_table::{Table, Cell, ContentArrangement, Attribute};
+use comfy_table::presets::UTF8_FULL;
+use comfy_table::Color as TableColor;
+
+const LOGO: &str = r#"
+╔═══════════════════════════════════════════════════════════════╗
+║         ███████╗██╗███████╗██████╗ ████████╗██████╗ ██╗      ║
+║         ██╔════╝██║██╔════╝██╔══██╗╚══██╔══╝██╔══██╗██║      ║
+║         ███████╗██║█████╗  ██████╔╝   ██║   ██████╔╝██║      ║
+║         ╚════██║██║██╔══╝  ██╔══██╗   ██║   ██╔══██╗██║      ║
+║         ███████║██║███████╗██║  ██║   ██║   ██║  ██║██║      ║
+║         ╚══════╝╚═╝╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝      ║
+║              🔺 Fractal Blockchain Wallet Balance 🔺          ║
+╚═══════════════════════════════════════════════════════════════╝
+"#;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    println!("{}", LOGO.bright_cyan());
+
     let home = std::env::var("HOME")?;
     let wallet_file = format!("{}/.siertrichain/wallet.json", home);
 
     let wallet_content = std::fs::read_to_string(&wallet_file)
-        .map_err(|e| format!("No wallet found at {}: {}", wallet_file, e))?;
+        .map_err(|e| {
+            eprintln!("{}", "╔══════════════════════════════════════════╗".red());
+            eprintln!("{}", "║         ❌ Wallet Not Found!            ║".red().bold());
+            eprintln!("{}", "╚══════════════════════════════════════════╝".red());
+            eprintln!();
+            eprintln!("{}", "💡 Run 'wallet new' to create a wallet".yellow());
+            format!("No wallet found at {}: {}", wallet_file, e)
+        })?;
 
     let wallet_data: serde_json::Value = serde_json::from_str(&wallet_content)
         .map_err(|e| format!("Failed to parse wallet: {}", e))?;
@@ -20,28 +45,96 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let chain = db.load_blockchain()
         .map_err(|e| format!("Failed to load blockchain: {}", e))?;
 
-    println!("💰 Wallet Balance\n");
-    println!("📍 Address: {}", my_address);
+    println!("{}", "┌─────────────────────────────────────────────────────────────┐".bright_green());
+    println!("{}", "│                    💰 WALLET BALANCE                        │".bright_green().bold());
+    println!("{}", "└─────────────────────────────────────────────────────────────┘".bright_green());
+    println!();
+
+    let addr_display = if my_address.len() > 50 {
+        format!("{}...{}", &my_address[..24], &my_address[my_address.len()-24..])
+    } else {
+        my_address.to_string()
+    };
+
+    println!("{}", format!("📍 Address: {}", addr_display).cyan());
 
     let height = chain.blocks.last()
         .map(|b| b.header.height)
         .unwrap_or(0);
-    println!("📊 Chain Height: {}", height);
-    println!("\n🔺 Your Triangles:");
+    println!("{}", format!("📊 Chain Height: {}", height).bright_blue());
+    println!("{}", format!("⛓️  Network: {}", "Mainnet".bright_magenta()).bright_blue());
+    println!();
 
     let mut my_triangles = 0;
     let mut total_area = 0.0;
+    let mut triangle_list = Vec::new();
 
     for (hash, triangle) in &chain.state.utxo_set {
         my_triangles += 1;
         total_area += triangle.area();
         let hash_hex = hex::encode(hash);
-        let hash_prefix = &hash_hex[..16];
-        println!("  • {} (area: {:.6})", hash_prefix, triangle.area());
+        triangle_list.push((hash_hex, triangle.area()));
     }
 
-    println!("\n📈 Total: {} triangles", my_triangles);
-    println!("📐 Combined area: {:.6}", total_area);
+    if my_triangles == 0 {
+        println!("{}", "╔══════════════════════════════════════════════════════════╗".yellow());
+        println!("{}", "║              📭 No Triangles Found                       ║".yellow());
+        println!("{}", "╠══════════════════════════════════════════════════════════╣".yellow());
+        println!("{}", "║  Your wallet is empty. Start mining or receive          ║".yellow());
+        println!("{}", "║  triangles from another address to see your balance.    ║".yellow());
+        println!("{}", "╚══════════════════════════════════════════════════════════╝".yellow());
+        println!();
+        println!("{}", "💡 Start mining: miner <your_address>".bright_blue());
+        return Ok(());
+    }
+
+    println!("{}", "╔══════════════════════════════════════════════════════════╗".green());
+    println!("{}", format!("║               🔺 Your Triangles ({})                     ║", my_triangles).green().bold());
+    println!("{}", "╚══════════════════════════════════════════════════════════╝".green());
+    println!();
+
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec![
+            Cell::new("#").fg(TableColor::Cyan).add_attribute(Attribute::Bold),
+            Cell::new("Triangle Hash").fg(TableColor::Cyan).add_attribute(Attribute::Bold),
+            Cell::new("Area").fg(TableColor::Cyan).add_attribute(Attribute::Bold),
+        ]);
+
+    triangle_list.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    for (idx, (hash, area)) in triangle_list.iter().enumerate() {
+        let hash_short = if hash.len() > 20 {
+            format!("{}...{}", &hash[..10], &hash[hash.len()-10..])
+        } else {
+            hash.clone()
+        };
+
+        table.add_row(vec![
+            Cell::new(format!("{}", idx + 1)).fg(TableColor::Yellow),
+            Cell::new(&hash_short).fg(TableColor::Green),
+            Cell::new(format!("{:.6}", area)).fg(TableColor::Magenta),
+        ]);
+    }
+
+    println!("{}", table);
+    println!();
+
+    println!("{}", "╔══════════════════════════════════════════════════════════╗".bright_green());
+    println!("{}", "║                    💎 TOTAL BALANCE                      ║".bright_green().bold());
+    println!("{}", "╠══════════════════════════════════════════════════════════╣".bright_green());
+    println!("{}", format!("║  🔺 Triangles: {:<42} ║", my_triangles).green());
+    println!("{}", format!("║  📐 Total Area: {:<39.6} ║", total_area).green());
+
+    let avg_area = total_area / my_triangles as f64;
+    println!("{}", format!("║  📊 Average Area: {:<37.6} ║", avg_area).green());
+    println!("{}", "╚══════════════════════════════════════════════════════════╝".bright_green());
+    println!();
+
+    println!("{}", "✨ Your wallet is looking good!".bright_blue());
+    println!();
 
     Ok(())
 }
