@@ -85,6 +85,7 @@ pub async fn run_api_server() {
         .route("/blockchain/blocks", get(get_recent_blocks))
         .route("/blockchain/block/:hash", get(get_block_by_hash))
         .route("/blockchain/block/by-height/:height", get(get_block_by_height))
+        .route("/blockchain/reward/:height", get(get_block_reward_info))
         // Address & Balance
         .route("/address/:addr/balance", get(get_address_balance))
         .route("/address/:addr/triangles", get(get_address_triangles))
@@ -93,6 +94,7 @@ pub async fn run_api_server() {
         .route("/transaction", post(submit_transaction))
         .route("/transaction/:hash", get(get_transaction_status))
         .route("/transactions/pending", get(get_pending_transactions))
+        .route("/transactions/mempool-stats", get(get_mempool_stats))
         // Wallet
         .route("/wallet/create", post(create_wallet))
         .route("/wallet/import", post(import_wallet))
@@ -560,12 +562,74 @@ async fn get_network_info(State(state): State<AppState>) -> Json<NetworkInfo> {
     })
 }
 
+// New endpoints for enhanced block explorer functionality
+
+#[derive(Serialize)]
+struct MempoolStatsResponse {
+    transaction_count: usize,
+    total_fees: u64,
+    avg_fee: f64,
+    highest_fee: u64,
+    lowest_fee: u64,
+}
+
+async fn get_mempool_stats(State(state): State<AppState>) -> Json<MempoolStatsResponse> {
+    let blockchain = state.blockchain.lock().unwrap();
+    let txs = blockchain.mempool.get_all_transactions();
+
+    let fees: Vec<u64> = txs.iter().map(|tx| tx.fee()).collect();
+    let total_fees: u64 = fees.iter().sum();
+    let avg_fee = if !fees.is_empty() {
+        total_fees as f64 / fees.len() as f64
+    } else {
+        0.0
+    };
+    let highest_fee = fees.iter().max().copied().unwrap_or(0);
+    let lowest_fee = fees.iter().min().copied().unwrap_or(0);
+
+    Json(MempoolStatsResponse {
+        transaction_count: txs.len(),
+        total_fees,
+        avg_fee,
+        highest_fee,
+        lowest_fee,
+    })
+}
+
+#[derive(Serialize)]
+struct RewardInfoResponse {
+    current_height: u64,
+    current_reward: u64,
+    next_halving_height: u64,
+    blocks_until_halving: u64,
+    reward_after_halving: u64,
+}
+
+async fn get_block_reward_info(State(state): State<AppState>, Path(height): Path<u64>) -> Json<RewardInfoResponse> {
+    let blockchain = state.blockchain.lock().unwrap();
+    let current_height = blockchain.blocks.len() as u64;
+    let query_height = if height == 0 { current_height } else { height };
+
+    let current_reward = Blockchain::calculate_block_reward(query_height);
+    let halving_interval = 210_000u64;
+    let next_halving_height = ((query_height / halving_interval) + 1) * halving_interval;
+    let blocks_until_halving = next_halving_height.saturating_sub(query_height);
+    let reward_after_halving = Blockchain::calculate_block_reward(next_halving_height);
+
+    Json(RewardInfoResponse {
+        current_height: query_height,
+        current_reward,
+        next_halving_height,
+        blocks_until_halving,
+        reward_after_halving,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::StatusCode;
     use axum_test::TestServer;
-    use crate::blockchain::Sha256Hash;
 
     fn test_app() -> Router {
         let blockchain = Blockchain::new();
@@ -623,8 +687,8 @@ mod tests {
     #[tokio::test]
     async fn test_submit_and_get_transaction() {
         let server = TestServer::new(test_app()).unwrap();
-        let mut blockchain = Blockchain::new();
-        let genesis = blockchain.blocks[0].clone();
+        let blockchain = Blockchain::new();
+        let _genesis = blockchain.blocks[0].clone();
         let keypair = KeyPair::generate().unwrap();
         let address = keypair.address();
         let parent_hash = *blockchain.state.utxo_set.keys().next().unwrap();

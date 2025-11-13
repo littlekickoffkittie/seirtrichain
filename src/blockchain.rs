@@ -186,8 +186,14 @@ impl Block {
     }
 
     pub fn verify_proof_of_work(&self) -> bool {
-        let leading_zeros = "0".repeat(self.header.difficulty as usize);
-        hex::encode(self.hash).starts_with(&leading_zeros)
+        // Prevent DoS by limiting difficulty to a reasonable maximum (256 bits = 64 hex chars)
+        const MAX_DIFFICULTY: u64 = 64;
+        let difficulty = self.header.difficulty.min(MAX_DIFFICULTY);
+
+        let hash_hex = hex::encode(self.hash);
+
+        // Check if first 'difficulty' characters are '0'
+        hash_hex.chars().take(difficulty as usize).all(|c| c == '0')
     }
 }
 
@@ -312,6 +318,18 @@ impl Mempool {
         self.transactions.values().cloned().collect()
     }
 
+    /// Get transactions ordered by fee (highest first) for mining prioritization
+    /// Returns up to `limit` transactions with the highest fees
+    pub fn get_transactions_by_fee(&self, limit: usize) -> Vec<Transaction> {
+        let mut txs: Vec<Transaction> = self.transactions.values().cloned().collect();
+
+        // Sort by fee in descending order (highest fee first)
+        txs.sort_by(|a, b| b.fee().cmp(&a.fee()));
+
+        // Return up to limit transactions
+        txs.into_iter().take(limit).collect()
+    }
+
     /// Get a specific transaction by hash
     pub fn get_transaction(&self, tx_hash: &Sha256Hash) -> Option<&Transaction> {
         self.transactions.get(tx_hash)
@@ -390,6 +408,12 @@ pub struct Blockchain {
 const DIFFICULTY_ADJUSTMENT_WINDOW: BlockHeight = 10;
 const TARGET_BLOCK_TIME_SECONDS: i64 = 60;
 
+/// Initial mining reward (in area units)
+const INITIAL_MINING_REWARD: u64 = 1000;
+
+/// Halving interval - reward halves every 210,000 blocks (similar to Bitcoin's ~4 years)
+const REWARD_HALVING_INTERVAL: BlockHeight = 210_000;
+
 impl Blockchain {
     pub fn new() -> Self {
         let mut state = TriangleState::new();
@@ -434,6 +458,22 @@ impl Blockchain {
             return Err(ChainError::InvalidBlockLinkage);
         }
 
+        // Validate timestamp is greater than parent's timestamp
+        if block.header.timestamp <= parent_block.header.timestamp {
+            return Err(ChainError::InvalidTransaction(
+                "Block timestamp must be greater than parent timestamp".to_string()
+            ));
+        }
+
+        // Validate timestamp is not too far in the future (allow 2 hours of clock drift)
+        const MAX_FUTURE_TIMESTAMP_DRIFT: i64 = 2 * 3600; // 2 hours in seconds
+        let current_time = Utc::now().timestamp();
+        if block.header.timestamp > current_time + MAX_FUTURE_TIMESTAMP_DRIFT {
+            return Err(ChainError::InvalidTransaction(
+                "Block timestamp is too far in the future".to_string()
+            ));
+        }
+
         if !block.verify_proof_of_work() {
             return Err(ChainError::InvalidProofOfWork);
         }
@@ -445,9 +485,11 @@ impl Blockchain {
 
         // Validate coinbase transaction rules
         let mut coinbase_count = 0;
+        let mut coinbase_reward = 0u64;
         for (i, tx) in block.transactions.iter().enumerate() {
-            if let Transaction::Coinbase(_) = tx {
+            if let Transaction::Coinbase(coinbase_tx) = tx {
                 coinbase_count += 1;
+                coinbase_reward = coinbase_tx.reward_area;
                 // Coinbase must be the first transaction
                 if i != 0 {
                     return Err(ChainError::InvalidTransaction(
@@ -462,6 +504,22 @@ impl Blockchain {
             return Err(ChainError::InvalidTransaction(
                 format!("Block must contain exactly one coinbase transaction, found {}", coinbase_count)
             ));
+        }
+
+        // Validate coinbase reward doesn't exceed block reward + fees
+        if block.header.height > 0 {
+            let block_reward = Self::calculate_block_reward(block.header.height);
+            let total_fees = Self::calculate_total_fees(&block.transactions);
+
+            // Use saturating_add to prevent integer overflow
+            let max_reward = block_reward.saturating_add(total_fees);
+
+            if coinbase_reward > max_reward {
+                return Err(ChainError::InvalidTransaction(
+                    format!("Coinbase reward {} exceeds maximum allowed {} (block reward: {}, fees: {})",
+                        coinbase_reward, max_reward, block_reward, total_fees)
+                ));
+            }
         }
 
         for tx in block.transactions.iter() {
@@ -562,6 +620,24 @@ impl Blockchain {
         Ok(())
     }
 
+    /// Calculate the block reward for a given block height (with halving)
+    pub fn calculate_block_reward(height: BlockHeight) -> u64 {
+        let halvings = height / REWARD_HALVING_INTERVAL;
+        if halvings >= 64 {
+            // After 64 halvings, reward is 0
+            return 0;
+        }
+        INITIAL_MINING_REWARD >> halvings
+    }
+
+    /// Calculate total transaction fees in a block
+    pub fn calculate_total_fees(transactions: &[Transaction]) -> u64 {
+        transactions.iter()
+            .filter(|tx| !matches!(tx, Transaction::Coinbase(_)))
+            .map(|tx| tx.fee())
+            .fold(0u64, |acc, fee| acc.saturating_add(fee))
+    }
+
     fn adjust_difficulty(&mut self) {
         if self.blocks.len() < DIFFICULTY_ADJUSTMENT_WINDOW as usize {
             return; // Not enough blocks to adjust
@@ -571,12 +647,18 @@ impl Blockchain {
         let window = &self.blocks[window_start_index..];
 
         // Calculate the average block time over the window
-        let mut total_time = 0;
+        let mut total_time: i64 = 0;
         for i in 1..window.len() {
             let time_diff = window[i].header.timestamp - window[i-1].header.timestamp;
-            total_time += time_diff;
+            // Use absolute value to handle any timestamp irregularities
+            total_time += time_diff.abs();
         }
         let average_time = total_time as f64 / (DIFFICULTY_ADJUSTMENT_WINDOW - 1) as f64;
+
+        // Prevent division by zero if average_time is 0 (e.g., all blocks have same timestamp)
+        if average_time == 0.0 {
+            return; // Don't adjust difficulty if we can't calculate a valid average
+        }
 
         // Define clamping bounds for the adjustment factor
         const MIN_ADJUSTMENT: f64 = 0.5; // Halve difficulty at most
@@ -594,7 +676,6 @@ impl Blockchain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::Triangle;
     use crate::transaction::{SubdivisionTx, Transaction};
     use crate::crypto::KeyPair;
 
@@ -704,6 +785,8 @@ mod tests {
             transactions,
         );
 
+        // Ensure timestamp is greater than parent
+        new_block.header.timestamp = last_block.header.timestamp + 1;
         new_block.hash = new_block.calculate_hash();
 
         while !new_block.verify_proof_of_work() {
@@ -722,7 +805,7 @@ mod tests {
 
     #[test]
     fn test_block_validation_success() {
-        let mut chain = Blockchain::new();
+        let chain = Blockchain::new();
         let genesis_hash = *chain.state.utxo_set.keys().next().unwrap();
         let genesis_tri = chain.state.utxo_set.get(&genesis_hash).unwrap().clone();
         let children = genesis_tri.subdivide();
@@ -754,6 +837,8 @@ mod tests {
             transactions,
         );
 
+        // Ensure timestamp is greater than parent
+        new_block.header.timestamp = last_block.header.timestamp + 1;
         new_block.hash = new_block.calculate_hash();
 
         while !new_block.verify_proof_of_work() {
@@ -1070,12 +1155,15 @@ mod tests {
             reward_area: 1000,
             beneficiary_address: "miner_address".to_string(),
         };
-        let new_block = Block::new(
+        let mut new_block = Block::new(
             last_block.header.height + 1,
             last_block.hash,
             chain.difficulty,
             vec![Transaction::Coinbase(coinbase), tx],
         );
+
+        // Ensure timestamp is greater than parent
+        new_block.header.timestamp = last_block.header.timestamp + 1;
 
         // Before applying, mempool has 1 transaction
         assert_eq!(chain.mempool.len(), 1);
@@ -1094,5 +1182,101 @@ mod tests {
 
         // After applying, mempool should be empty
         assert_eq!(chain.mempool.len(), 0);
+    }
+
+    #[test]
+    fn test_mining_reward_halving() {
+        // Test initial reward
+        assert_eq!(Blockchain::calculate_block_reward(0), 1000);
+        assert_eq!(Blockchain::calculate_block_reward(1), 1000);
+        assert_eq!(Blockchain::calculate_block_reward(209_999), 1000);
+
+        // Test first halving at block 210,000
+        assert_eq!(Blockchain::calculate_block_reward(210_000), 500);
+        assert_eq!(Blockchain::calculate_block_reward(419_999), 500);
+
+        // Test second halving at block 420,000
+        assert_eq!(Blockchain::calculate_block_reward(420_000), 250);
+
+        // Test third halving
+        assert_eq!(Blockchain::calculate_block_reward(630_000), 125);
+
+        // Test many halvings (reward approaches zero)
+        assert_eq!(Blockchain::calculate_block_reward(210_000 * 10), 0); // After 10 halvings, reward is <1
+    }
+
+    #[test]
+    fn test_transaction_fee_calculation() {
+        use crate::transaction::{SubdivisionTx, TransferTx};
+
+        let genesis = genesis_triangle();
+        let children = genesis.subdivide();
+        let address = "test_address".to_string();
+
+        // Test subdivision transaction with fee
+        let sub_tx = SubdivisionTx::new(genesis.hash(), children.to_vec(), address.clone(), 100, 1);
+        let tx1 = Transaction::Subdivision(sub_tx);
+        assert_eq!(tx1.fee(), 100);
+
+        // Test transfer transaction with fee
+        let transfer_tx = TransferTx {
+            input_hash: genesis.hash(),
+            new_owner: "new_owner".to_string(),
+            sender: address,
+            fee: 50,
+            nonce: 1,
+            memo: None,
+            signature: None,
+            public_key: None,
+        };
+        let tx2 = Transaction::Transfer(transfer_tx);
+        assert_eq!(tx2.fee(), 50);
+
+        // Test total fees calculation
+        let transactions = vec![tx1, tx2];
+        let total_fees = Blockchain::calculate_total_fees(&transactions);
+        assert_eq!(total_fees, 150);
+    }
+
+    #[test]
+    fn test_mempool_fee_prioritization() {
+        use crate::transaction::SubdivisionTx;
+
+        let mut chain = Blockchain::new();
+        let genesis = genesis_triangle();
+        let genesis_hash = genesis.hash();
+        let children = genesis.subdivide();
+        let keypair = KeyPair::generate().unwrap();
+        let address = keypair.address();
+
+        // Create transactions with different fees
+        for (i, fee) in [10u64, 50, 25, 100, 5].iter().enumerate() {
+            let mut tx = SubdivisionTx::new(genesis_hash, children.to_vec(), address.clone(), *fee, i as u64);
+            let message = tx.signable_message();
+            let signature = keypair.sign(&message).unwrap();
+            let public_key = keypair.public_key.serialize().to_vec();
+            tx.sign(signature, public_key);
+            chain.mempool.add_transaction(Transaction::Subdivision(tx)).unwrap();
+        }
+
+        assert_eq!(chain.mempool.len(), 5);
+
+        // Get transactions sorted by fee
+        let sorted_txs = chain.mempool.get_transactions_by_fee(5);
+        assert_eq!(sorted_txs.len(), 5);
+
+        // Verify they're sorted by fee (highest first)
+        assert_eq!(sorted_txs[0].fee(), 100);
+        assert_eq!(sorted_txs[1].fee(), 50);
+        assert_eq!(sorted_txs[2].fee(), 25);
+        assert_eq!(sorted_txs[3].fee(), 10);
+        assert_eq!(sorted_txs[4].fee(), 5);
+
+        // Test limit parameter
+        let top_3 = chain.mempool.get_transactions_by_fee(3);
+        assert_eq!(top_3.len(), 3);
+        assert_eq!(top_3[0].fee(), 100);
+        assert_eq!(top_3[1].fee(), 50);
+        assert_eq!(top_3[2].fee(), 25);
     }
 }

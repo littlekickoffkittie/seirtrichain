@@ -19,6 +19,16 @@ impl Transaction {
     pub fn hash_str(&self) -> String {
         hex::encode(self.hash())
     }
+
+    /// Get the fee for this transaction
+    pub fn fee(&self) -> u64 {
+        match self {
+            Transaction::Subdivision(tx) => tx.fee,
+            Transaction::Transfer(tx) => tx.fee,
+            Transaction::Coinbase(_) => 0, // Coinbase has no fee
+        }
+    }
+
     /// Calculate the hash of this transaction
     pub fn hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
@@ -268,18 +278,27 @@ impl TransferTx {
         if self.signature.is_none() || self.public_key.is_none() {
             return Err(ChainError::InvalidTransaction("Transfer not signed".to_string()));
         }
-        
+
+        // Validate memo length to prevent DoS attacks
+        if let Some(ref memo) = self.memo {
+            if memo.len() > Self::MAX_MEMO_LENGTH {
+                return Err(ChainError::InvalidTransaction(
+                    format!("Memo exceeds maximum length of {} characters", Self::MAX_MEMO_LENGTH)
+                ));
+            }
+        }
+
         let message = self.signable_message();
         let is_valid = crate::crypto::verify_signature(
             self.public_key.as_ref().unwrap(),
             &message,
             self.signature.as_ref().unwrap(),
         )?;
-        
+
         if !is_valid {
             return Err(ChainError::InvalidTransaction("Invalid signature".to_string()));
         }
-        
+
         Ok(())
     }
 }
@@ -288,7 +307,7 @@ impl TransferTx {
 mod tests {
     use super::*;
     use crate::blockchain::TriangleState;
-    use crate::crypto::{self, KeyPair};
+    use crate::crypto::KeyPair;
     use crate::geometry::{Point, Triangle};
 
     #[test]
