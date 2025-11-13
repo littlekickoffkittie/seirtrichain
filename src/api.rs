@@ -6,16 +6,52 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use tower_http::cors::{Any, CorsLayer};
+use tokio::task::JoinHandle;
 
 use crate::blockchain::{Blockchain, Block};
 use crate::persistence::Database;
 use crate::transaction::Transaction;
 use crate::crypto::KeyPair;
+use crate::miner;
+use crate::network::Node;
+
+/// Mining state that tracks the current mining operation
+#[derive(Clone)]
+struct MiningState {
+    is_mining: Arc<AtomicBool>,
+    blocks_mined: Arc<AtomicU64>,
+    last_block_time: Arc<Mutex<Option<Instant>>>,
+    mining_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+}
+
+impl Default for MiningState {
+    fn default() -> Self {
+        Self {
+            is_mining: Arc::new(AtomicBool::new(false)),
+            blocks_mined: Arc::new(AtomicU64::new(0)),
+            last_block_time: Arc::new(Mutex::new(None)),
+            mining_task: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
+/// Network state that tracks peers and node information
+#[derive(Clone, Default)]
+struct NetworkState {
+    peers: Arc<Mutex<Vec<Node>>>,
+    node_id: Arc<Mutex<String>>,
+    listening_port: Arc<Mutex<u16>>,
+}
 
 #[derive(Clone)]
 struct AppState {
     blockchain: Arc<Mutex<Blockchain>>,
+    db: Arc<Mutex<Database>>,
+    mining: MiningState,
+    network: NetworkState,
 }
 
 pub async fn run_api_server() {
@@ -24,7 +60,18 @@ pub async fn run_api_server() {
 
     let app_state = AppState {
         blockchain: Arc::new(Mutex::new(blockchain)),
+        db: Arc::new(Mutex::new(db)),
+        mining: MiningState::default(),
+        network: NetworkState::default(),
     };
+
+    // Initialize network state with default values
+    {
+        let mut node_id = app_state.network.node_id.lock().unwrap();
+        *node_id = format!("siertri-node-{}", rand::random::<u32>());
+        let mut port = app_state.network.listening_port.lock().unwrap();
+        *port = 8333;
+    }
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -311,21 +358,172 @@ pub struct MiningStatus {
     pub hashrate: f64,
 }
 
-async fn get_mining_status(State(_state): State<AppState>) -> Json<MiningStatus> {
-    // Placeholder - would need mining state
+async fn get_mining_status(State(state): State<AppState>) -> Json<MiningStatus> {
+    let is_mining = state.mining.is_mining.load(Ordering::Relaxed);
+    let blocks_mined = state.mining.blocks_mined.load(Ordering::Relaxed);
+
+    // Calculate approximate hashrate based on last block time
+    let hashrate = if is_mining {
+        let last_time = state.mining.last_block_time.lock().unwrap();
+        if let Some(instant) = *last_time {
+            let elapsed = instant.elapsed().as_secs_f64();
+            if elapsed > 0.0 {
+                // Estimate based on difficulty and time
+                let blockchain = state.blockchain.lock().unwrap();
+                let difficulty = blockchain.difficulty;
+                let expected_hashes = 16_u64.pow(difficulty as u32) as f64;
+                expected_hashes / elapsed
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
     Json(MiningStatus {
-        is_mining: false,
-        blocks_mined: 0,
-        hashrate: 0.0,
+        is_mining,
+        blocks_mined,
+        hashrate,
     })
 }
 
-async fn start_mining(State(_state): State<AppState>) -> Json<String> {
-    Json("Mining started (not implemented in API yet)".to_string())
+async fn start_mining(State(state): State<AppState>) -> impl IntoResponse {
+    // Check if already mining
+    if state.mining.is_mining.load(Ordering::Relaxed) {
+        return (StatusCode::BAD_REQUEST, "Mining already in progress").into_response();
+    }
+
+    // Get a wallet address for mining rewards
+    let wallet_path = std::env::var("HOME").unwrap_or_else(|_| ".".to_string()) + "/.siertrichain/wallet.json";
+    let wallet_data = match std::fs::read_to_string(&wallet_path) {
+        Ok(data) => data,
+        Err(_) => return (StatusCode::BAD_REQUEST, "No wallet found. Create a wallet first using siertri-wallet-new").into_response(),
+    };
+
+    let wallet: serde_json::Value = match serde_json::from_str(&wallet_data) {
+        Ok(w) => w,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Invalid wallet format").into_response(),
+    };
+
+    let miner_address = match wallet.get("address").and_then(|a| a.as_str()) {
+        Some(addr) => addr.to_string(),
+        None => return (StatusCode::INTERNAL_SERVER_ERROR, "Wallet missing address").into_response(),
+    };
+
+    // Set mining flag
+    state.mining.is_mining.store(true, Ordering::Relaxed);
+
+    // Spawn mining task
+    let blockchain_clone = state.blockchain.clone();
+    let db_clone = state.db.clone();
+    let mining_state = state.mining.clone();
+
+    let task = tokio::spawn(async move {
+        loop {
+            // Check if we should stop
+            if !mining_state.is_mining.load(Ordering::Relaxed) {
+                break;
+            }
+
+            // Get pending transactions
+            let block = {
+                let blockchain = blockchain_clone.lock().unwrap();
+                let transactions = blockchain.mempool.get_all_transactions();
+
+                // Create coinbase transaction
+                let reward_area = 100u64;
+                let coinbase = Transaction::Coinbase(crate::transaction::CoinbaseTx {
+                    reward_area,
+                    beneficiary_address: miner_address.clone(),
+                });
+
+                let mut all_txs = vec![coinbase];
+                all_txs.extend(transactions);
+
+                let height = blockchain.blocks.len() as u64;
+                let previous_hash = blockchain.blocks.last().unwrap().hash;
+                let difficulty = blockchain.difficulty;
+
+                Block::new(height, previous_hash, difficulty, all_txs)
+            };
+
+            // Mine the block (this is CPU intensive)
+            let start = Instant::now();
+            match miner::mine_block(block) {
+                Ok(mined_block) => {
+                    // Update last block time
+                    {
+                        let mut last_time = mining_state.last_block_time.lock().unwrap();
+                        *last_time = Some(start);
+                    }
+
+                    // Add block to blockchain
+                    {
+                        let mut blockchain = blockchain_clone.lock().unwrap();
+                        if let Err(e) = blockchain.apply_block(mined_block.clone()) {
+                            eprintln!("Failed to apply mined block: {}", e);
+                            continue;
+                        }
+
+                        // Save to database
+                        let db = db_clone.lock().unwrap();
+                        if let Err(e) = db.save_block(&mined_block) {
+                            eprintln!("Failed to save block: {}", e);
+                        }
+                        if let Err(e) = db.save_utxo_set(&blockchain.state) {
+                            eprintln!("Failed to save UTXO set: {}", e);
+                        }
+                    }
+
+                    // Increment blocks mined counter
+                    mining_state.blocks_mined.fetch_add(1, Ordering::Relaxed);
+
+                    println!("✅ Mined block at height {}", mined_block.header.height);
+                }
+                Err(e) => {
+                    eprintln!("Mining error: {}", e);
+                    break;
+                }
+            }
+        }
+
+        println!("Mining stopped");
+    });
+
+    // Store the task handle
+    {
+        let mut task_handle = state.mining.mining_task.lock().unwrap();
+        *task_handle = Some(task);
+    }
+
+    Json("Mining started successfully".to_string()).into_response()
 }
 
-async fn stop_mining(State(_state): State<AppState>) -> Json<String> {
-    Json("Mining stopped".to_string())
+async fn stop_mining(State(state): State<AppState>) -> impl IntoResponse {
+    // Check if mining is active
+    if !state.mining.is_mining.load(Ordering::Relaxed) {
+        return (StatusCode::BAD_REQUEST, "Mining is not active").into_response();
+    }
+
+    // Signal the mining task to stop
+    state.mining.is_mining.store(false, Ordering::Relaxed);
+
+    // Wait for the task to complete (with timeout)
+    let task_handle = state.mining.mining_task.lock().unwrap().take();
+    if let Some(handle) = task_handle {
+        // Wait up to 5 seconds for the task to finish
+        match tokio::time::timeout(Duration::from_secs(5), handle).await {
+            Ok(_) => {},
+            Err(_) => {
+                eprintln!("Warning: Mining task didn't stop within timeout");
+            }
+        }
+    }
+
+    Json("Mining stopped successfully".to_string()).into_response()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -334,9 +532,13 @@ pub struct PeerInfo {
     pub last_seen: i64,
 }
 
-async fn get_peers(State(_state): State<AppState>) -> Json<Vec<PeerInfo>> {
-    // Placeholder - would need network state
-    Json(vec![])
+async fn get_peers(State(state): State<AppState>) -> Json<Vec<PeerInfo>> {
+    let peers = state.network.peers.lock().unwrap();
+    let peer_info: Vec<PeerInfo> = peers.iter().map(|peer| PeerInfo {
+        address: peer.addr(),
+        last_seen: chrono::Utc::now().timestamp(), // In a real implementation, track actual last seen time
+    }).collect();
+    Json(peer_info)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -346,11 +548,15 @@ pub struct NetworkInfo {
     pub listening_port: u16,
 }
 
-async fn get_network_info(State(_state): State<AppState>) -> Json<NetworkInfo> {
+async fn get_network_info(State(state): State<AppState>) -> Json<NetworkInfo> {
+    let peers = state.network.peers.lock().unwrap();
+    let node_id = state.network.node_id.lock().unwrap();
+    let listening_port = state.network.listening_port.lock().unwrap();
+
     Json(NetworkInfo {
-        peers_count: 0,
-        node_id: "local-node".to_string(),
-        listening_port: 8333,
+        peers_count: peers.len(),
+        node_id: node_id.clone(),
+        listening_port: *listening_port,
     })
 }
 
@@ -363,8 +569,13 @@ mod tests {
 
     fn test_app() -> Router {
         let blockchain = Blockchain::new();
+        let db = Database::open(":memory:").unwrap();
+
         let app_state = AppState {
             blockchain: Arc::new(Mutex::new(blockchain)),
+            db: Arc::new(Mutex::new(db)),
+            mining: MiningState::default(),
+            network: NetworkState::default(),
         };
 
         Router::new()
