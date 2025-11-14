@@ -29,6 +29,8 @@ indicatif = "0.17"
 console = "0.15"
 comfy-table = "7.1"
 humantime = "2.1"
+parking_lot = "0.12"
+ipnetwork = "0.20"
 
 [[bin]]
 name = "siertri-wallet"

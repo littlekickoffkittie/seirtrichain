@@ -15,6 +15,7 @@ pub enum ChainError {
     WalletError(String),
     OrphanBlock,
     ApiError(String),
+    AuthenticationError(String),
 }
 
 impl fmt::Display for ChainError {
@@ -31,6 +32,7 @@ impl fmt::Display for ChainError {
             ChainError::WalletError(msg) => write!(f, "Wallet error: {}", msg),
             ChainError::OrphanBlock => write!(f, "Orphan block"),
             ChainError::ApiError(msg) => write!(f, "API error: {}", msg),
+            ChainError::AuthenticationError(msg) => write!(f, "Authentication error: {}", msg),
         }
     }
 }

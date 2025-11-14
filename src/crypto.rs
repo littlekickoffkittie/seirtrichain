@@ -44,7 +44,11 @@ impl KeyPair {
         hasher.update(&pubkey_bytes);
         format!("{:x}", hasher.finalize())
     }
-    
+
+    pub fn public_key_bytes(&self) -> Vec<u8> {
+        self.public_key.serialize().to_vec()
+    }
+
     pub fn sign(&self, message: &[u8]) -> Result<Vec<u8>, ChainError> {
         let secp = Secp256k1::new();
         

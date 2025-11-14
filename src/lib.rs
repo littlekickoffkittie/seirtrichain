@@ -9,3 +9,4 @@ pub mod network;
 pub mod wallet;
 pub mod addressbook;
 pub mod api;
+pub mod security;
