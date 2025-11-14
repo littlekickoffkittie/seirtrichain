@@ -465,15 +465,14 @@ impl Blockchain {
     /// Recalculate difficulty based on recent block times
     /// This is useful when loading an old chain or after parameter changes
     pub fn recalculate_difficulty(&mut self) {
-        if self.blocks.len() < 2 {
+        // Need at least 10 blocks for a meaningful difficulty calculation
+        // (Too few blocks gives wildly inaccurate results)
+        if self.blocks.len() < 11 {
             return;
         }
 
-        // If we don't have enough blocks for a full window, use what we have
-        let window_size = (self.blocks.len() - 1).min(DIFFICULTY_ADJUSTMENT_WINDOW as usize);
-        if window_size < 2 {
-            return;
-        }
+        // If we don't have enough blocks for a full window, use what we have (min 10 blocks)
+        let window_size = (self.blocks.len() - 1).min(DIFFICULTY_ADJUSTMENT_WINDOW as usize).max(10);
 
         let start_idx = self.blocks.len() - window_size - 1;
         let window = &self.blocks[start_idx..];

@@ -287,7 +287,7 @@ impl Database {
 
         let state = self.load_utxo_set()?;
         let mempool = Mempool::new();
-        let mut blockchain = Blockchain {
+        let blockchain = Blockchain {
             blocks,
             block_index,
             forks: std::collections::HashMap::new(),
@@ -296,14 +296,9 @@ impl Database {
             mempool,
         };
 
-        // Recalculate difficulty to ensure it's appropriate for current chain state
-        // This is especially important after parameter changes or database inconsistencies
-        blockchain.recalculate_difficulty();
-
-        // Save the recalculated difficulty if it changed
-        if blockchain.difficulty != difficulty {
-            let _ = self.save_difficulty(blockchain.difficulty);
-        }
+        // NOTE: Recalculation disabled - it was causing difficulty to jump on every reload
+        // The normal adjustment every 2,016 blocks will handle difficulty changes
+        // blockchain.recalculate_difficulty();
 
         Ok(blockchain)
     }

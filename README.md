@@ -11,11 +11,12 @@
 ## Key Features
 
 - **Fractal-based Value**: Sierpinski triangles as currency (not coins!)
+- **Bitcoin-Like Economics**: 420M max supply, halving every 210k blocks, deflationary
 - **Real Cryptography**: ECDSA signatures with secp256k1
-- **Proof-of-Work**: SHA-256 based mining with dynamic difficulty adjustment
+- **Proof-of-Work**: SHA-256 based mining with Bitcoin-style difficulty adjustment (2,016 block window)
 - **UTXO Model**: Bitcoin-style unspent triangle outputs
 - **P2P Network**: Fully decentralized node-to-node communication
-- **SQLite Persistence**: Lightweight blockchain storage
+- **SQLite Persistence**: Lightweight blockchain storage with atomic operations
 
 ## How It Works
 
@@ -102,22 +103,38 @@ cargo run --bin siertri-balance
 ### 4. Mine Blocks
 
 ```bash
+# Get your wallet address first
+cargo run --bin siertri-wallet
+
+# Run continuous mining (RECOMMENDED - includes full statistics)
+cargo run --release --bin siertri-miner <your_wallet_address>
+
 # Mine a single block
 cargo run --bin siertri-mine-block
+```
 
-# Run continuous mining
-cargo run --bin siertri-miner
-
-# Run miner on a loop
-while true; do cargo run --bin siertri-mine-block 2>&1 | grep -v 'Finished' | grep -v 'Running'; done
+**New Enhanced Miner Output:**
+```
+╔══════════════════════════════════════════════════════════╗
+║                    📊 MINING STATS                       ║
+╠══════════════════════════════════════════════════════════╣
+║ 🔺 Blocks Mined: 42                                      ║
+║ 🏔️  Chain Height: 763                                    ║
+║ 🎯 Difficulty: 8                                         ║
+║ 💎 Current Reward: 1000 area units                       ║
+║ 📈 Total Supply: 763,000 / 420,000,000 (0.182%)         ║
+║ ⏰ Blocks to Halving: 209,237                            ║
+║ 🎚️  Halving Era: 0                                       ║
+╚══════════════════════════════════════════════════════════╝
 ```
 
 Mining process:
-1. Collects pending transactions
-2. Creates coinbase reward
-3. Computes Merkle root
-4. Searches for valid nonce (Proof-of-Work)
-5. Broadcasts block to network
+1. Reloads blockchain (stays in sync with network)
+2. Collects pending transactions
+3. Creates coinbase reward (1000 area, halves every 210k blocks)
+4. Computes Merkle root
+5. Searches for valid nonce (Proof-of-Work)
+6. Broadcasts block to network
 
 ### 5. Transfer Triangles
 
@@ -221,9 +238,18 @@ enum NetworkMessage {
 
 ### Proof-of-Work
 - Algorithm: SHA-256 double hash
-- Difficulty: Leading zero bits (adjustable)
-- Target block time: 60 seconds
-- Adjustment window: 10 blocks
+- Difficulty: Leading zero bits (dynamically adjusted)
+- Target block time: 60 seconds (1 minute)
+- Adjustment window: 2,016 blocks (~1.4 days, Bitcoin-style)
+- Adjustment range: 0.25x to 4x per period
+
+### Supply & Economics (NEW! 🎯)
+- **Max Supply**: 420,000,000 area units (20× Bitcoin's 21M)
+- **Initial Reward**: 1,000 area units per block
+- **Halving**: Every 210,000 blocks (~4 years at 1 min/block)
+- **Halvings**: 64 total (after which reward = 0)
+- **Supply Formula**: 1000 × 210,000 × 2 = 420M
+- See [BITCOIN_FEATURES.md](BITCOIN_FEATURES.md) for full economics documentation
 
 ### Block Validation
 1. Valid block hash (meets difficulty)
@@ -463,7 +489,7 @@ A: Triangles create a geometric economy with unique properties: fractal subdivis
 A: Not in v0.1.0, but it's on the roadmap. Merging would reverse subdivision (3 children → 1 parent).
 
 **Q: What's the maximum supply?**
-A: Theoretically unbounded via mining rewards, but subdivision preserves 75% of area, creating natural deflation.
+A: **420,000,000 area units** (capped). Mining rewards halve every 210,000 blocks (like Bitcoin), reaching zero after 64 halvings. Subdivision preserves 75% of area, creating additional deflationary pressure.
 
 **Q: Is this faster than Bitcoin?**
 A: Block time is 60s (vs Bitcoin's 10min), but it's not optimized for speed yet. Sharding is planned for Phase 4.
