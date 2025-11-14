@@ -252,7 +252,8 @@ impl Database {
             utxo_set.insert(hash, triangle);
         }
 
-        let difficulty: u64 = self.conn.query_row(
+        // Load difficulty from metadata, but verify against actual blocks
+        let metadata_difficulty: u64 = self.conn.query_row(
             "SELECT value FROM metadata WHERE key = 'difficulty'",
             [],
             |row| {
@@ -261,18 +262,50 @@ impl Database {
             }
         ).unwrap_or(2);
 
+        // IMPORTANT: Use the difficulty from the most recent block as source of truth
+        // The metadata might be stale due to crashes or non-atomic writes
+        let actual_difficulty = blocks.last()
+            .map(|block| block.header.difficulty)
+            .unwrap_or(2);
+
+        // If there's a mismatch, warn and use the actual block difficulty
+        let difficulty = if metadata_difficulty != actual_difficulty && !blocks.is_empty() {
+            eprintln!("⚠️  Warning: Metadata difficulty ({}) doesn't match last block difficulty ({}). Using block data.",
+                      metadata_difficulty, actual_difficulty);
+            eprintln!("   Updating metadata to match...");
+            // Fix the metadata
+            let _ = self.conn.execute(
+                "INSERT OR REPLACE INTO metadata (key, value) VALUES ('difficulty', ?1)",
+                params![actual_difficulty.to_string()],
+            );
+            actual_difficulty
+        } else {
+            actual_difficulty
+        };
+
         let block_index = blocks.iter().map(|b| (b.hash, b.clone())).collect();
 
         let state = self.load_utxo_set()?;
         let mempool = Mempool::new();
-        Ok(Blockchain {
+        let mut blockchain = Blockchain {
             blocks,
             block_index,
             forks: std::collections::HashMap::new(),
             state,
             difficulty,
             mempool,
-        })
+        };
+
+        // Recalculate difficulty to ensure it's appropriate for current chain state
+        // This is especially important after parameter changes or database inconsistencies
+        blockchain.recalculate_difficulty();
+
+        // Save the recalculated difficulty if it changed
+        if blockchain.difficulty != difficulty {
+            let _ = self.save_difficulty(blockchain.difficulty);
+        }
+
+        Ok(blockchain)
     }
 }
 

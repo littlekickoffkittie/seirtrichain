@@ -22,6 +22,22 @@ const LOGO: &str = r#"
 ╚═══════════════════════════════════════════════════════════════╝
 "#;
 
+/// Format a large number with thousands separators
+fn format_number(num: u64) -> String {
+    let num_str = num.to_string();
+    let mut result = String::new();
+    let chars: Vec<char> = num_str.chars().collect();
+
+    for (i, &ch) in chars.iter().enumerate() {
+        if i > 0 && (chars.len() - i) % 3 == 0 {
+            result.push(',');
+        }
+        result.push(ch);
+    }
+
+    result
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = env::args().collect();
@@ -96,6 +112,13 @@ async fn main() {
     println!();
 
     loop {
+        // Reload blockchain from database before each mining round
+        // This ensures we're mining on the latest chain, including blocks from peers
+        chain = db.load_blockchain().unwrap_or_else(|_| {
+            eprintln!("⚠️  Failed to reload blockchain, using current chain");
+            chain
+        });
+
         let last_block = chain.blocks.last().unwrap();
         let new_height = last_block.header.height + 1;
         let difficulty = chain.difficulty;
@@ -111,6 +134,11 @@ async fn main() {
             difficulty,
             vec![coinbase_tx],
         );
+
+        // Ensure timestamp is greater than parent to avoid validation errors
+        if new_block.header.timestamp <= last_block.header.timestamp {
+            new_block.header.timestamp = last_block.header.timestamp + 1;
+        }
 
         println!("{}", format!("⛏️  Mining block #{} (difficulty: {})...", new_height, difficulty).bright_yellow());
 
@@ -161,9 +189,9 @@ async fn main() {
             continue;
         }
 
-        db.save_block(&new_block).expect("Failed to save block");
-        db.save_utxo_set(&chain.state).expect("Failed to save UTXO");
-        db.save_difficulty(chain.difficulty).expect("Failed to save difficulty");
+        // Use atomic save to ensure database consistency
+        db.save_blockchain_state(&new_block, &chain.state, chain.difficulty)
+            .expect("Failed to save blockchain state");
 
         if let Err(e) = network_node.broadcast_block(&new_block).await {
             eprintln!("{}", format!("⚠️  Failed to broadcast block: {}", e).yellow());
@@ -175,14 +203,31 @@ async fn main() {
         let elapsed = start_time.elapsed();
         let avg_block_time = elapsed.as_secs_f64() / blocks_mined as f64;
 
+        // Calculate supply statistics
+        let current_height = chain.blocks.last().unwrap().header.height;
+        let current_supply = Blockchain::calculate_current_supply(current_height);
+        let supply_pct = (current_supply as f64 / siertrichain::blockchain::MAX_SUPPLY as f64) * 100.0;
+        let current_reward = Blockchain::calculate_block_reward(current_height);
+        let halving_era = current_height / 210_000;
+        let blocks_to_halving = ((halving_era + 1) * 210_000).saturating_sub(current_height);
+
         println!();
         println!("{}", "╔══════════════════════════════════════════════════════════╗".bright_cyan());
         println!("{}", "║                    📊 MINING STATS                       ║".bright_cyan().bold());
         println!("{}", "╠══════════════════════════════════════════════════════════╣".bright_cyan());
         println!("{}", format!("║ 🔺 Blocks Mined: {:<39} ║", blocks_mined).cyan());
+        println!("{}", format!("║ 🏔️  Chain Height: {:<39} ║", current_height).cyan());
         println!("{}", format!("║ ⏱️  Uptime: {:.0}m {:.0}s{:<38} ║", elapsed.as_secs() / 60, elapsed.as_secs() % 60, "").cyan());
         println!("{}", format!("║ ⚡ Avg Block Time: {:.1}s{:<34} ║", avg_block_time, "").cyan());
-        println!("{}", format!("║ 💎 Total Earned: {:<37.1} ║", blocks_mined as f64 * 1000.0).cyan());
+        println!("{}", format!("║ 🎯 Difficulty: {:<41} ║", chain.difficulty).cyan());
+        println!("{}", format!("║ 💎 Current Reward: {:<35} ║", current_reward).cyan());
+        println!("{}", format!("║ 🪙  Total Earned: {:<37.1} ║", blocks_mined as f64 * 1000.0).cyan());
+        println!("{}", format!("║ 📈 Total Supply: {:>10} / {} ({:.3}%){:<6} ║",
+                 format_number(current_supply),
+                 format_number(siertrichain::blockchain::MAX_SUPPLY),
+                 supply_pct, "").cyan());
+        println!("{}", format!("║ ⏰ Blocks to Halving: {:<32} ║", format_number(blocks_to_halving)).cyan());
+        println!("{}", format!("║ 🎚️  Halving Era: {:<38} ║", halving_era).cyan());
         println!("{}", "╚══════════════════════════════════════════════════════════╝".bright_cyan());
         println!();
     }

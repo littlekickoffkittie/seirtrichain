@@ -405,14 +405,29 @@ pub struct Blockchain {
     pub mempool: Mempool,
 }
 
-const DIFFICULTY_ADJUSTMENT_WINDOW: BlockHeight = 10;
+// Bitcoin-like parameters for Sierpinski Triangle Blockchain
+// Target: 1 block every 60 seconds = 1,440 blocks/day = ~525,600 blocks/year
+
+/// Difficulty adjusts every 2,016 blocks (like Bitcoin) ~1.4 days at 1 minute blocks
+const DIFFICULTY_ADJUSTMENT_WINDOW: BlockHeight = 2016;
+
+/// Target block time: 60 seconds (1 minute)
 const TARGET_BLOCK_TIME_SECONDS: i64 = 60;
 
-/// Initial mining reward (in area units)
+/// Initial mining reward (in area units) - represents triangle area
 const INITIAL_MINING_REWARD: u64 = 1000;
 
-/// Halving interval - reward halves every 210,000 blocks (similar to Bitcoin's ~4 years)
+/// Halving interval - reward halves every 210,000 blocks (~4 years at 1 minute blocks)
+/// This matches Bitcoin's ~4 year halving cycle
 const REWARD_HALVING_INTERVAL: BlockHeight = 210_000;
+
+/// Maximum number of halvings before reward becomes 0 (64 halvings)
+const MAX_HALVINGS: u64 = 64;
+
+/// Calculate maximum supply: sum of geometric series
+/// Max supply = INITIAL_REWARD * HALVING_INTERVAL * (1 + 1/2 + 1/4 + ... ≈ 2)
+/// = 1000 * 210,000 * 2 = 420,000,000 area units
+pub const MAX_SUPPLY: u64 = INITIAL_MINING_REWARD * REWARD_HALVING_INTERVAL * 2;
 
 impl Blockchain {
     pub fn new() -> Self {
@@ -444,6 +459,45 @@ impl Blockchain {
             state,
             difficulty: 2,
             mempool: Mempool::new(),
+        }
+    }
+
+    /// Recalculate difficulty based on recent block times
+    /// This is useful when loading an old chain or after parameter changes
+    pub fn recalculate_difficulty(&mut self) {
+        if self.blocks.len() < 2 {
+            return;
+        }
+
+        // If we don't have enough blocks for a full window, use what we have
+        let window_size = (self.blocks.len() - 1).min(DIFFICULTY_ADJUSTMENT_WINDOW as usize);
+        if window_size < 2 {
+            return;
+        }
+
+        let start_idx = self.blocks.len() - window_size - 1;
+        let window = &self.blocks[start_idx..];
+
+        let actual_time = window.last().unwrap().header.timestamp - window.first().unwrap().header.timestamp;
+        if actual_time <= 0 {
+            return;
+        }
+
+        let expected_time = (window_size as i64) * TARGET_BLOCK_TIME_SECONDS;
+        let adjustment_factor = expected_time as f64 / actual_time as f64;
+
+        const MIN_ADJUSTMENT: f64 = 0.25;
+        const MAX_ADJUSTMENT: f64 = 4.0;
+        let clamped_factor = adjustment_factor.max(MIN_ADJUSTMENT).min(MAX_ADJUSTMENT);
+
+        let old_difficulty = self.difficulty;
+        let new_difficulty = ((self.difficulty as f64 * clamped_factor).round() as u64).max(1);
+
+        if old_difficulty != new_difficulty {
+            self.difficulty = new_difficulty;
+            let avg_block_time = actual_time as f64 / window_size as f64;
+            println!("🔄 Recalculated difficulty: {} -> {} (avg: {:.1}s, target: {}s, window: {} blocks)",
+                     old_difficulty, new_difficulty, avg_block_time, TARGET_BLOCK_TIME_SECONDS, window_size);
         }
     }
 
@@ -580,9 +634,15 @@ impl Blockchain {
                 }
             }
 
+            let block_height = valid_block.header.height;
             self.blocks.push(valid_block.clone());
-            self.block_index.insert(valid_block.hash, valid_block);
-            self.adjust_difficulty();
+            self.block_index.insert(valid_block.hash, valid_block.clone());
+
+            // Only adjust difficulty every DIFFICULTY_ADJUSTMENT_WINDOW blocks to prevent oscillation
+            // Adjust after accumulating enough blocks (at multiples of the window)
+            if block_height > 0 && block_height % DIFFICULTY_ADJUSTMENT_WINDOW == 0 {
+                self.adjust_difficulty();
+            }
 
             self.mempool.remove_transactions(&tx_hashes);
             self.mempool.validate_and_prune(&self.state);
@@ -591,6 +651,7 @@ impl Blockchain {
             // Case 2: The new block creates a fork
             println!("🍴 Fork detected at height {}", valid_block.header.height);
             self.forks.insert(valid_block.hash, valid_block.clone());
+            self.block_index.insert(valid_block.hash, valid_block.clone());
 
             // Check if the fork is longer than the main chain
             let mut fork_chain = vec![valid_block.clone()];
@@ -601,16 +662,53 @@ impl Blockchain {
             }
 
             if fork_chain.len() > self.blocks.len() {
-                println!("Switching to a longer fork");
-                // Reorganize the chain
+                println!("⚠️  Switching to a longer fork! Rebuilding state...");
+
+                // Reorganize the chain - build complete chain from genesis
                 let mut new_blocks = Vec::new();
-                let mut current_block = valid_block;
+                let mut current_block = valid_block.clone();
+
                 while let Some(block) = self.block_index.get(&current_block.header.previous_hash) {
                     new_blocks.push(current_block);
                     current_block = block.clone();
+                    if current_block.header.height == 0 {
+                        new_blocks.push(current_block);
+                        break;
+                    }
                 }
                 new_blocks.reverse();
+
+                // CRITICAL: Rebuild the entire UTXO state from scratch
+                self.state = TriangleState::new();
+                let genesis = genesis_triangle();
+                let genesis_hash = genesis.hash();
+                self.state.utxo_set.insert(genesis_hash, genesis);
+
+                // Replay all transactions to rebuild state
+                for block in &new_blocks[1..] { // Skip genesis
+                    for tx in &block.transactions {
+                        match tx {
+                            Transaction::Subdivision(sub_tx) => {
+                                self.state.apply_subdivision(sub_tx)?;
+                            },
+                            Transaction::Coinbase(cb_tx) => {
+                                self.state.apply_coinbase(cb_tx, block.header.height)?;
+                            },
+                            Transaction::Transfer(transfer_tx) => {
+                                let triangle = self.state.utxo_set.get_mut(&transfer_tx.input_hash)
+                                    .ok_or_else(|| ChainError::TriangleNotFound(
+                                        format!("Transfer input {} missing from UTXO set", hex::encode(transfer_tx.input_hash))
+                                    ))?;
+                                triangle.owner = transfer_tx.new_owner.clone();
+                            }
+                        }
+                    }
+                }
+
                 self.blocks = new_blocks;
+                self.mempool.validate_and_prune(&self.state);
+
+                println!("✅ Fork reorganization complete - state rebuilt");
             }
         } else {
             // Case 3: Orphan block
@@ -623,11 +721,54 @@ impl Blockchain {
     /// Calculate the block reward for a given block height (with halving)
     pub fn calculate_block_reward(height: BlockHeight) -> u64 {
         let halvings = height / REWARD_HALVING_INTERVAL;
-        if halvings >= 64 {
+        if halvings >= MAX_HALVINGS {
             // After 64 halvings, reward is 0
             return 0;
         }
         INITIAL_MINING_REWARD >> halvings
+    }
+
+    /// Calculate the total supply that has been mined up to a given block height
+    /// This accounts for all halvings that have occurred
+    pub fn calculate_current_supply(height: BlockHeight) -> u64 {
+        if height == 0 {
+            return 0;
+        }
+
+        let mut total_supply = 0u64;
+        let mut current_height = 1u64; // Start from block 1 (first mined block)
+
+        while current_height <= height {
+            let reward = Self::calculate_block_reward(current_height);
+            total_supply = total_supply.saturating_add(reward);
+            current_height += 1;
+        }
+
+        total_supply
+    }
+
+    /// Calculate remaining supply that can still be mined
+    pub fn calculate_remaining_supply(&self) -> u64 {
+        let current = Self::calculate_current_supply(self.blocks.last().unwrap().header.height);
+        MAX_SUPPLY.saturating_sub(current)
+    }
+
+    /// Get percentage of total supply mined
+    pub fn supply_percentage(&self) -> f64 {
+        let current = Self::calculate_current_supply(self.blocks.last().unwrap().header.height);
+        (current as f64 / MAX_SUPPLY as f64) * 100.0
+    }
+
+    /// Get the current halving era (0 = first era, 1 = first halving, etc.)
+    pub fn current_halving_era(&self) -> u64 {
+        self.blocks.last().unwrap().header.height / REWARD_HALVING_INTERVAL
+    }
+
+    /// Blocks until next halving
+    pub fn blocks_until_next_halving(&self) -> u64 {
+        let current_height = self.blocks.last().unwrap().header.height;
+        let next_halving_height = (self.current_halving_era() + 1) * REWARD_HALVING_INTERVAL;
+        next_halving_height.saturating_sub(current_height)
     }
 
     /// Calculate total transaction fees in a block
@@ -646,30 +787,35 @@ impl Blockchain {
         let window_start_index = self.blocks.len() - DIFFICULTY_ADJUSTMENT_WINDOW as usize;
         let window = &self.blocks[window_start_index..];
 
-        // Calculate the average block time over the window
-        let mut total_time: i64 = 0;
-        for i in 1..window.len() {
-            let time_diff = window[i].header.timestamp - window[i-1].header.timestamp;
-            // Use absolute value to handle any timestamp irregularities
-            total_time += time_diff.abs();
-        }
-        let average_time = total_time as f64 / (DIFFICULTY_ADJUSTMENT_WINDOW - 1) as f64;
+        // Calculate the actual time taken for the last DIFFICULTY_ADJUSTMENT_WINDOW blocks
+        let actual_time = window.last().unwrap().header.timestamp - window.first().unwrap().header.timestamp;
 
-        // Prevent division by zero if average_time is 0 (e.g., all blocks have same timestamp)
-        if average_time == 0.0 {
-            return; // Don't adjust difficulty if we can't calculate a valid average
+        // Timestamps should always increase; if they don't, there's a bug
+        if actual_time <= 0 {
+            eprintln!("⚠️  Warning: Invalid timestamp range detected in difficulty adjustment");
+            return; // Don't adjust with invalid data
         }
 
-        // Define clamping bounds for the adjustment factor
-        const MIN_ADJUSTMENT: f64 = 0.5; // Halve difficulty at most
-        const MAX_ADJUSTMENT: f64 = 2.0; // Double difficulty at most
+        // Expected time for the window
+        let expected_time = (DIFFICULTY_ADJUSTMENT_WINDOW as i64 - 1) * TARGET_BLOCK_TIME_SECONDS;
 
-        // Calculate adjustment factor and clamp it
-        let adjustment_factor = (TARGET_BLOCK_TIME_SECONDS as f64 / average_time).max(MIN_ADJUSTMENT).min(MAX_ADJUSTMENT);
+        // Calculate adjustment factor - how much faster/slower than target
+        let adjustment_factor = expected_time as f64 / actual_time as f64;
 
-        // Adjust difficulty, ensuring it doesn't go below a minimum of 1
-        let new_difficulty = (self.difficulty as f64 * adjustment_factor).round() as u64;
-        self.difficulty = new_difficulty.max(1);
+        // Bitcoin-style clamping: limit adjustment to 4x in either direction per period
+        // This prevents wild swings while still allowing quick convergence
+        const MIN_ADJUSTMENT: f64 = 0.25; // Can decrease by up to 4x
+        const MAX_ADJUSTMENT: f64 = 4.0;  // Can increase by up to 4x
+
+        let clamped_factor = adjustment_factor.max(MIN_ADJUSTMENT).min(MAX_ADJUSTMENT);
+
+        let old_difficulty = self.difficulty;
+        let new_difficulty = ((self.difficulty as f64 * clamped_factor).round() as u64).max(1);
+        self.difficulty = new_difficulty;
+
+        let avg_block_time = actual_time as f64 / (DIFFICULTY_ADJUSTMENT_WINDOW as f64 - 1.0);
+        println!("⚙️  Difficulty adjusted: {} -> {} (avg block time: {:.1}s, target: {}s)",
+                 old_difficulty, new_difficulty, avg_block_time, TARGET_BLOCK_TIME_SECONDS);
     }
 }
 
